@@ -49,7 +49,7 @@ It does not promise all Python Testinfra modules or Python API compatibility.
   fixture directories. Unix flag/path supplementation uses the existing regex
   crate because procfs-core does not expose those fields completely.
 
-## 5. Services and release checks — implementation complete; live CI validation pending
+## 5. Services and release checks — complete
 
 - Verify active/inactive, enabled/disabled, missing, and unsupported service cases.
 - Add an opt-in live systemd test and configure Linux CI to run it.
@@ -63,16 +63,29 @@ It does not promise all Python Testinfra modules or Python API compatibility.
   also passed. The systemd fixture shell script passed its syntax check.
 - Service state fixtures cover positive, disabled/linked/masked, inactive/failed,
   and operational-error outcomes. Docker checks cover an unsupported manager.
-- Live systemd validation has not run locally: this macOS workspace and its test
-  containers do not have a running systemd manager. The opt-in fixture and CI
-  step are implemented, with cleanup of only their own runtime units. A CI run
-  must still verify the live manager paths, including missing units.
+- Live systemd validation, including missing units, passed in
+  [the first CI run](https://github.com/gilesw/testinfra-rs/actions/runs/39282291601).
+  This closes the check that could not run on the macOS workspace.
 
 ## Milestone result
 
 All five slices were implemented in order, reusing crates for generic work.
-The only outstanding validation is the live systemd test on a suitable host/CI.
-No crate has been published and no external CI run has been triggered.
+The first GitHub Actions run passed all jobs, including live systemd validation.
+No crate has been published.
+
+## Release automation alignment — 2026-10-19
+
+- Align the minimum/pinned Rust version with tickerapp-rs at 1.98.1; the 1.85
+  checks above record the earlier implementation milestone.
+- Reuse tickerapp-rs mise tasks, release scripts and their isolated tests,
+  git-cliff configuration, and reusable lint/test/release workflows.
+- Move lint scheduling to hk, following congru, with a fast file-filtered path
+  and a full profile for Clippy/rustdoc. Keep release-script tests in the common
+  test gate. Pin hk, Python, and Docker CLI alongside the other mise tools.
+- Retain the Linux, Docker, socket, and systemd test gates.
+- Add package metadata, archive contents, changelog, and a first-release guide.
+- Validate packaging without uploading; release tags and publication remain a
+  separate action after reviewing the prepared candidate.
 
 ## Deferred beyond this milestone
 

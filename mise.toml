@@ -1,0 +1,116 @@
+[tools]
+actionlint = "1.7.12"
+git-cliff = "2.14.2"
+hk = "2.1.0"
+python = "3.12.15"
+docker-cli = "29.8.2"
+rust = { version = "1.98.1", components = "clippy,rustfmt" }
+shellcheck = "0.10.0"
+"github:bnjbvr/cargo-machete" = "0.9.2"
+
+[tasks.fmt]
+description = "Format Rust source"
+run = "cargo fmt --all"
+
+[tasks."fmt:check"]
+description = "Check Rust formatting without changing files"
+run = "hk check --all --check --step rust-format"
+
+[tasks.lint]
+description = "All lint checks through hk, including Clippy and docs"
+run = "hk check --all --check --profile slow"
+
+[tasks."lint:changed"]
+description = "Fast hk checks selected by changed files"
+run = "hk check --check"
+
+[tasks.test]
+description = "Unit, documentation, and native Linux tests"
+run = ["cargo test --locked", "mise run test:scripts"]
+
+[tasks."test:docker"]
+description = "Test resources in TESTINFRA_TEST_IMAGE (default Alpine)"
+run = "cargo test --locked --test infrastructure docker_resources -- --ignored --nocapture"
+
+[tasks."test:sockets"]
+description = "Test TCP, UDP, and Unix listeners in a Linux Docker container"
+run = "cargo test --locked --test infrastructure docker_sockets -- --ignored --nocapture"
+
+[tasks."test:systemd"]
+description = "Opt-in live systemd fixtures on a Linux systemd host (uses sudo)"
+run = "bash tests/fixtures/systemd.sh"
+
+[tasks.doc]
+description = "Build API docs with warnings denied"
+env = { RUSTDOCFLAGS = "-D warnings" }
+run = "cargo doc --no-deps --locked"
+
+[tasks."lint:scripts"]
+description = "ShellCheck through hk (release-script tests are test:scripts)"
+run = "hk check --all --check --step shellcheck"
+
+[tasks."test:scripts"]
+description = "Reused release-script tests with isolated repositories and stubbed tools"
+run = [
+  "python3 scripts/test-bump.py",
+  "python3 scripts/test-tag.py",
+  "python3 scripts/test-publish.py",
+]
+
+[tasks."lint:actions"]
+description = "Validate GitHub Actions workflows"
+run = "hk check --all --check --step actions"
+
+[tasks."lint:deps"]
+description = "Detect unused dependencies"
+run = "hk check --all --check --step deps"
+
+[tasks."check:fast"]
+description = "Parallel hk formatting, script, workflow, dependency, and config checks"
+run = "hk check --all --check"
+
+[tasks.check]
+description = "Common local and CI gate: hk lint, then all tests"
+run = ["mise run lint", "mise run test"]
+
+[tasks.setup]
+description = "Install pinned tools and validate hk; does not install Git hooks"
+run = ["mise install", "hk validate"]
+
+[tasks."hooks:install"]
+description = "Opt-in repository-local pre-commit hook through mise"
+run = "hk install --mise"
+
+[tasks."hooks:uninstall"]
+description = "Remove repository-local hk hooks"
+run = "hk uninstall"
+
+[tasks."package:check"]
+description = "Build the publishable archive without uploading it"
+run = "cargo publish --dry-run --locked --registry crates-io"
+
+[tasks.bump]
+description = "Raise the version and add a git-cliff changelog section: major|minor|patch"
+dir = "{{config_root}}"
+run = "bash scripts/bump.sh"
+
+[tasks.tag]
+description = "Tag and push the release at origin/main; pushing v* starts publication"
+dir = "{{config_root}}"
+run = "bash scripts/tag.sh"
+
+[tasks.release]
+description = "Verify a committed, pushed version tag and dry-run publication"
+dir = "{{config_root}}"
+run = "bash scripts/publish.sh"
+
+[tasks."release:publish"]
+description = "Verify the tagged commit, run all common gates, and publish to crates.io"
+dir = "{{config_root}}"
+run = "bash scripts/publish.sh --publish"
+
+[tasks."release:login"]
+description = "Optional Cargo login for a local first publish"
+dir = "{{config_root}}"
+raw = true
+run = "cargo login --registry crates-io"

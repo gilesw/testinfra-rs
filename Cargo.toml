@@ -2,10 +2,17 @@
 name = "testinfra"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.98.1"
 description = "Testinfra-inspired infrastructure assertions for Linux and Docker"
 license = "MIT"
 repository = "https://github.com/gilesw/testinfra-rs"
+authors = ["Giles Westwood"]
+readme = "README.md"
+documentation = "https://docs.rs/testinfra"
+publish = ["crates-io"]
+keywords = ["testing", "infrastructure", "linux", "docker", "testinfra"]
+categories = ["development-tools::testing", "os::linux-apis"]
+include = ["/src/**/*.rs", "/examples/*.rs", "/tests/**/*.rs", "/tests/fixtures/*.sh", "/README.md", "/RELEASING.md", "/CHANGELOG.md", "/LICENSE"]
 
 [dependencies]
 bollard = "0.21"
@@ -20,3 +27,6 @@ unescaper = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,51 @@
+// mise owns tool versions; hk schedules lint checks and filters changed files.
+amends "package://github.com/jdx/hk/releases/download/v2.1.0/hk@2.1.0#/Config.pkl"
+
+steps {
+  ["rust-format"] {
+    glob = List("**/*.rs", "Cargo.toml", "mise.toml", "hk.pkl")
+    check = new Command { argv = List("cargo", "fmt", "--all", "--", "--check") }
+  }
+  ["shellcheck"] {
+    glob = List("scripts/**/*.sh", "tests/fixtures/**/*.sh", "mise.toml", "hk.pkl")
+    check = "shellcheck --shell=bash scripts/*.sh tests/fixtures/*.sh"
+  }
+  ["actions"] {
+    glob = List(".github/workflows/*.yml", ".github/workflows/*.yaml", "mise.toml", "hk.pkl")
+    check = new Command { argv = List("actionlint") }
+  }
+  ["deps"] {
+    glob = List("Cargo.toml", "Cargo.lock", "mise.toml", "hk.pkl")
+    check = new Command { argv = List("cargo", "machete") }
+  }
+  ["hk-config"] {
+    glob = List("hk.pkl", "mise.toml")
+    check = new Command { argv = List("hk", "validate") }
+  }
+  ["clippy"] {
+    glob = List("**/*.rs", "Cargo.toml", "Cargo.lock", "mise.toml", "hk.pkl")
+    profiles = List("slow")
+    check = new Command { argv = List("cargo", "clippy", "--all-targets", "--locked", "--", "-D", "warnings") }
+  }
+  ["rustdoc"] {
+    glob = List("src/**/*.rs", "Cargo.toml", "Cargo.lock", "mise.toml", "hk.pkl")
+    profiles = List("slow")
+    // Both Cargo jobs use target/; serializing them avoids a build-directory lock.
+    depends = List("clippy")
+    env { ["RUSTDOCFLAGS"] = "-D warnings" }
+    check = new Command { argv = List("cargo", "doc", "--no-deps", "--locked") }
+  }
+}
+
+hooks {
+  ["check"] {
+    fix = false
+    stage = false
+    stash = "none"
+  }
+  ["pre-commit"] {
+    fix = false
+    stage = false
+    stash = "none"
+  }
+}

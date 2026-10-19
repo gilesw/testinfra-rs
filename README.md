@@ -4,6 +4,9 @@ A small, Testinfra-inspired Rust library for checking the actual configuration o
 Linux hosts and running Linux Docker containers. Write ordinary `#[test]` functions
 and run them with `cargo test`.
 
+Requires Rust **1.98.1** or newer, matching tickerapp-rs. Development tooling is
+pinned in `mise.toml`.
+
 This is an initial implementation, not a complete API-compatible port of Python
 [Testinfra](https://github.com/pytest-dev/pytest-testinfra). There is no Python or
 target-side agent dependency.
@@ -16,6 +19,8 @@ The crate is not published. Add this checkout to your test project's `Cargo.toml
 [dev-dependencies]
 testinfra = { path = "../testinfra-rs" }
 ```
+
+After the first release, use `testinfra = "0.1"` under `[dev-dependencies]`.
 
 Create `tests/configuration.rs`:
 
@@ -183,11 +188,31 @@ container. Tests use Docker's CLI to create and remove their isolated fixtures.
 ## Development
 
 ```sh
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-cargo doc --no-deps --locked
+mise install
+mise run check
+mise run package:check
 ```
+
+Mise owns the pinned tools, including hk, Python, and Docker CLI. A running Docker
+daemon, Git, and the platform shell are prerequisites. The shared gate runs hk
+lint checks, then Rust and release-script tests. CI uses the same tasks with
+pinned Rust 1.98.1, plus the environment-specific tests below.
+
+Lint configuration lives in `hk.pkl`, following the congru setup. hk runs
+independent checks concurrently and filters them by relevant files:
+
+```sh
+mise run check:fast        # all fast lint checks, without test suites
+mise run lint:changed      # fast lint checks selected by changed files
+mise run lint              # all lint, including Clippy and rustdoc
+mise run hooks:install     # optional local Git pre-commit hook through mise
+mise run hooks:uninstall
+```
+
+The pre-commit hook uses working-tree contents and never fixes, stages, or stashes.
+Clippy/rustdoc use hk's `slow` profile; the common gate and CI always enable it.
+`mise run fmt` is the explicit command that rewrites Rust formatting.
+Release-script tests remain mandatory in `mise run test` and `mise run check`.
 
 Real Docker tests are opt-in. They create a uniquely named container, make fixture
 files under `/tmp`, and remove the container on exit. Images are pulled by Docker
@@ -199,6 +224,9 @@ cargo test --test infrastructure -- --ignored --nocapture
 TESTINFRA_TEST_IMAGE=debian:bookworm-slim cargo test --test infrastructure -- --ignored
 TESTINFRA_TEST_IMAGE=fedora:44 cargo test --test infrastructure -- --ignored
 ```
+
+Equivalent tasks are `mise run test:docker` (honouring `TESTINFRA_TEST_IMAGE`),
+`mise run test:sockets`, and `mise run test:systemd`.
 
 CI runs native Linux tests and the Docker suite on Alpine, Debian, and Fedora.
 The socket fixture uses `python:3.13-alpine` to open TCP, UDP, and Unix listeners;
@@ -215,7 +243,21 @@ This fixture script uses sudo to create two uniquely named units under
 It does not edit existing units. CI runs it on its Linux runner. The library's
 service inspection methods are read-only.
 
-See [PLAN.md](PLAN.md) for the ordered implementation slices and validation record.
+See the [implementation plan](https://github.com/gilesw/testinfra-rs/blob/main/PLAN.md)
+for the ordered slices and their validation. The first GitHub Actions run passed
+live systemd validation as well as the Docker matrix.
+
+## Releases
+
+The [release guide](RELEASING.md) describes the reused tickerapp-rs automation:
+`mise run bump` updates the version/changelog, `mise run tag` creates and pushes
+an annotated release tag, `mise run release` validates a tagged dry run, and
+`mise run release:publish` uploads that exact commit. Pushing later release tags
+publishes through crates.io trusted publishing. The initial `0.1.0` upload is
+manual because the crate must exist before configuring its trusted publisher.
+
+Package metadata, a dated changelog, and an explicit archive file list are included.
+The first release has been prepared; preparation and dry runs do not upload a crate.
 
 ## Existing alternatives
 

@@ -1,0 +1,49 @@
+# Runs only for a v* tag: lint, test, then publish the tagged commit to
+# crates.io with a short-lived trusted-publishing token. scripts/publish.sh
+# repeats every gate and a dry run before it uploads; see RELEASING.md.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+
+  test:
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    name: publish to crates.io
+    # Trusted publishing needs an existing crate. Bootstrap 0.1.0 locally;
+    # its tag still runs lint and the entire test workflow.
+    if: github.ref_name != 'v0.1.0'
+    needs: [lint, test]
+    runs-on: ubuntu-24.04
+    # crates.io tokens from the auth step expire after 30 minutes.
+    timeout-minutes: 30
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    # One upload at a time, and never cancel one that has started.
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+        with:
+          experimental: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: mise run release:publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
