@@ -1,0 +1,22 @@
+[package]
+name = "testinfra"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Testinfra-inspired infrastructure assertions for Linux and Docker"
+license = "MIT"
+repository = "https://github.com/gilesw/testinfra-rs"
+
+[dependencies]
+bollard = "0.21"
+etc-os-release = "0.1.1"
+futures-util = "0.3"
+procfs-core = { version = "0.18", default-features = false }
+regex = "1"
+shlex = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "net", "time"] }
+unescaper = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
