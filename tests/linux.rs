@@ -1,6 +1,7 @@
 #![cfg(target_os = "linux")]
 
 use std::{
+    env,
     net::{TcpListener, UdpSocket},
     os::unix::net::UnixListener,
 };
@@ -61,6 +62,6 @@ fn native_kernel_resources() -> Result<()> {
     assert!(host.mount_point("/").is_mounted()?);
     assert_eq!(host.mount_point("/proc").info()?.filesystem, "proc");
     assert_eq!(host.environment()?["LC_ALL"], "C");
-    assert_eq!(host.environment()?["PATH"], std::env::var("PATH").unwrap());
+    assert_eq!(host.environment()?["PATH"], env::var("PATH").unwrap());
     Ok(())
 }

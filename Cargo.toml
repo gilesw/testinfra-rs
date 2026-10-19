@@ -12,7 +12,7 @@ documentation = "https://docs.rs/testinfra"
 publish = ["crates-io"]
 keywords = ["testing", "infrastructure", "linux", "docker", "testinfra"]
 categories = ["development-tools::testing", "os::linux-apis"]
-include = ["/src/**/*.rs", "/examples/*.rs", "/tests/**/*.rs", "/tests/fixtures/*.sh", "/README.md", "/RELEASING.md", "/CHANGELOG.md", "/LICENSE"]
+include = ["/src/**/*.rs", "/examples/*.rs", "/tests/**/*.rs", "/tests/fixtures/*.sh", "/clippy.toml", "/README.md", "/RELEASING.md", "/CHANGELOG.md", "/LICENSE"]
 
 [dependencies]
 bollard = "0.21"
@@ -30,3 +30,16 @@ tempfile = "3"
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[lints.clippy]
+absolute_paths = "warn"
+uninlined_format_args = "warn"
+wildcard_imports = "warn"
+enum_glob_use = "warn"
+self_named_module_files = "warn"
+cognitive_complexity = "warn"
+too_many_lines = "warn"
+too_many_arguments = "warn"
+excessive_nesting = "warn"
+type_complexity = "warn"
+fn_params_excessive_bools = "warn"

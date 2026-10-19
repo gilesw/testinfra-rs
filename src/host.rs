@@ -1,8 +1,16 @@
-use std::process::Command;
+use std::{
+    env,
+    io::{self, ErrorKind},
+    iter,
+    process::Command,
+    result, str, thread,
+};
+use tokio::runtime::Builder;
 
 use bollard::{
     Docker,
     container::LogOutput,
+    errors::Error as DockerError,
     exec::{CreateExecOptions, StartExecResults},
 };
 use futures_util::StreamExt;
@@ -11,7 +19,7 @@ use futures_util::StreamExt;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Io(#[from] std::io::Error),
+    Io(#[from] io::Error),
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("unsupported: {0}")]
@@ -21,7 +29,7 @@ pub enum Error {
     #[error("execution failed: {0}")]
     Transport(String),
     #[error(transparent)]
-    Docker(#[from] bollard::errors::Error),
+    Docker(#[from] DockerError),
     #[error("command {command:?} exited with {status}: {stderr}", status = .result.exit_status, stderr = .result.stderr.trim())]
     CommandFailed {
         command: String,
@@ -31,7 +39,7 @@ pub enum Error {
     Parse(String),
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = result::Result<T, Error>;
 
 /// Raw bytes preserve binary file contents and non-UTF-8 command output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +54,7 @@ impl CommandResult {
         self.exit_status == 0
     }
     pub fn stdout_text(&self) -> Result<&str> {
-        std::str::from_utf8(&self.stdout).map_err(|e| Error::Parse(e.to_string()))
+        str::from_utf8(&self.stdout).map_err(|e| Error::Parse(e.to_string()))
     }
 }
 
@@ -135,9 +143,9 @@ impl Host {
 
     /// Read `TESTINFRA_HOST`, defaulting to `local://` when unset.
     pub fn from_env() -> Result<Self> {
-        match std::env::var("TESTINFRA_HOST") {
+        match env::var("TESTINFRA_HOST") {
             Ok(url) => Self::from_url(&url),
-            Err(std::env::VarError::NotPresent) => Self::local(),
+            Err(env::VarError::NotPresent) => Self::local(),
             Err(e) => Err(Error::InvalidInput(e.to_string())),
         }
     }
@@ -178,10 +186,10 @@ impl Host {
             } => {
                 // Keep the synchronous API usable from ordinary tests and Tokio tests.
                 // A scoped thread prevents nested-runtime panics in async callers.
-                std::thread::scope(|scope| {
+                thread::scope(|scope| {
                     scope
                         .spawn(|| {
-                            tokio::runtime::Builder::new_current_thread()
+                            Builder::new_current_thread()
                                 .enable_all()
                                 .build()?
                                 .block_on(docker_run(
@@ -230,8 +238,8 @@ impl Host {
 // Bollard handles Docker's wire protocol. Ask the CLI to resolve its selected
 // context when available, rather than implementing Docker config/context parsing.
 fn docker_endpoint() -> Result<Option<String>> {
-    let has_context = std::env::var_os("DOCKER_CONTEXT").is_some_and(|s| !s.is_empty());
-    if !has_context && std::env::var_os("DOCKER_HOST").is_some_and(|s| !s.is_empty()) {
+    let has_context = env::var_os("DOCKER_CONTEXT").is_some_and(|s| !s.is_empty());
+    if !has_context && env::var_os("DOCKER_HOST").is_some_and(|s| !s.is_empty()) {
         return Ok(None);
     }
     match Command::new("docker")
@@ -248,7 +256,7 @@ fn docker_endpoint() -> Result<Option<String>> {
                 String::from_utf8(output.stdout).map_err(|e| Error::Parse(e.to_string()))?;
             Ok(Some(endpoint.trim().to_owned()))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !has_context => Ok(None),
+        Err(e) if e.kind() == ErrorKind::NotFound && !has_context => Ok(None),
         Err(e) => Err(e.into()),
         Ok(output) => Err(Error::Transport(
             String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -269,9 +277,7 @@ async fn docker_run(
     }
     .negotiate_version()
     .await?;
-    let command: Vec<&str> = std::iter::once(program)
-        .chain(args.iter().copied())
-        .collect();
+    let command: Vec<&str> = iter::once(program).chain(args.iter().copied()).collect();
     let exec = docker
         .create_exec(
             container,

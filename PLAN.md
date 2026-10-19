@@ -71,7 +71,7 @@ It does not promise all Python Testinfra modules or Python API compatibility.
 
 All five slices were implemented in order, reusing crates for generic work.
 The first GitHub Actions run passed all jobs, including live systemd validation.
-No crate has been published.
+At completion of that milestone, no crate had been published.
 
 ## Release automation alignment — 2026-10-19
 
@@ -79,13 +79,23 @@ No crate has been published.
   checks above record the earlier implementation milestone.
 - Reuse tickerapp-rs mise tasks, release scripts and their isolated tests,
   git-cliff configuration, and reusable lint/test/release workflows.
-- Move lint scheduling to hk, following congru, with a fast file-filtered path
+- Move lint scheduling to hk, with parallel checks, with a fast file-filtered path
   and a full profile for Clippy/rustdoc. Keep release-script tests in the common
   test gate. Pin hk, Python, and Docker CLI alongside the other mise tools.
 - Retain the Linux, Docker, socket, and systemd test gates.
 - Add package metadata, archive contents, changelog, and a first-release guide.
 - Validate packaging without uploading; release tags and publication remain a
   separate action after reviewing the prepared candidate.
+
+## First release quality gate
+
+- Enable explicit import/formatting style lints and the cognitive complexity,
+  function length, argument count, nesting, type complexity, and boolean parameter
+  limits in `clippy.toml`. Treat their warnings as errors in hk and CI.
+- Split the large integration fixture into resource-specific helpers and import
+  types/modules directly. No lint suppressions are required.
+- Include the lint configuration in the archive so the checks are reproducible
+  from the published source.
 
 ## Deferred beyond this milestone
 

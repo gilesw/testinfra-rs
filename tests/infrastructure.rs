@@ -1,8 +1,11 @@
 use std::{
+    env, process,
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use testinfra::{Error, Host, Result};
+use tokio::runtime::Builder;
 
 struct Files<'a> {
     host: &'a Host,
@@ -24,6 +27,15 @@ fn exercise(host: &Host) -> Result<()> {
         host,
         root: root.clone(),
     };
+    exercise_files(host, &root)?;
+    exercise_accounts(host)?;
+    exercise_kernel(host, &root)?;
+    exercise_packages(host)?;
+    exercise_processes_services(host)?;
+    Ok(())
+}
+
+fn exercise_files(host: &Host, root: &str) -> Result<()> {
     let path = format!("{root}/file '\"$()`;\nname");
     let link = format!("{root}/link");
     let dangling = format!("{root}/dangling");
@@ -39,26 +51,14 @@ fn exercise(host: &Host) -> Result<()> {
     assert!(file.contains("(?m)^root:x:[0-9]$")?);
     assert!(!file.contains_literal("[0-9]")?);
     assert!(file.contains("[").is_err());
-    let meta = file.metadata()?;
-    assert_eq!(meta.mode, 0o640);
-    assert_eq!(meta.size, 15);
-    assert_eq!(meta.uid, 0);
-    assert_eq!(file.uid()?, 0);
-    assert_eq!(file.gid()?, 0);
-    assert_eq!(file.size()?, 15);
-    assert!(!file.is_executable()?);
-    assert!(host.exec("chmod", &["750", &path])?.success());
-    assert!(file.is_executable()?);
-    assert!(host.exec("chmod", &["640", &path])?.success());
-    assert_eq!(file.user()?, "root");
-    assert_eq!(file.group()?, "root");
-    assert!(host.file(&root).is_directory()?);
+    exercise_file_metadata(host, &path)?;
+    assert!(host.file(root).is_directory()?);
     assert!(host.file("").exists().is_err());
     assert!(host.file(&link).is_symlink()?);
     assert!(host.file(&link).is_file()?);
     assert_eq!(host.file(&link).link_target()?, path);
     assert!(file.link_target().is_err());
-    assert_eq!(host.file(&link).metadata()?, meta);
+    assert_eq!(host.file(&link).metadata()?, file.metadata()?);
     assert!(host.file(&dangling).exists()?);
     assert!(host.file(&dangling).is_symlink()?);
     assert!(!host.file(&dangling).is_file()?);
@@ -67,6 +67,11 @@ fn exercise(host: &Host) -> Result<()> {
     assert!(host.file(&missing).content().is_err());
     assert!(host.file(&missing).metadata().is_err());
 
+    exercise_binary_file(host, root)?;
+    Ok(())
+}
+
+fn exercise_binary_file(host: &Host, root: &str) -> Result<()> {
     let binary = format!("{root}/binary");
     assert!(
         host.exec(
@@ -78,6 +83,28 @@ fn exercise(host: &Host) -> Result<()> {
     assert_eq!(host.file(&binary).content_bytes()?, [255, 0]);
     assert!(host.file(&binary).content().is_err());
 
+    Ok(())
+}
+
+fn exercise_file_metadata(host: &Host, path: &str) -> Result<()> {
+    let file = host.file(path);
+    let meta = file.metadata()?;
+    assert_eq!(meta.mode, 0o640);
+    assert_eq!(meta.size, 15);
+    assert_eq!(meta.uid, 0);
+    assert_eq!(file.uid()?, 0);
+    assert_eq!(file.gid()?, 0);
+    assert_eq!(file.size()?, 15);
+    assert!(!file.is_executable()?);
+    assert!(host.exec("chmod", &["750", path])?.success());
+    assert!(file.is_executable()?);
+    assert!(host.exec("chmod", &["640", path])?.success());
+    assert_eq!(file.user()?, "root");
+    assert_eq!(file.group()?, "root");
+    Ok(())
+}
+
+fn exercise_accounts(host: &Host) -> Result<()> {
     assert!(host.user("root").exists()?);
     assert_eq!(host.user("root").uid()?, 0);
     assert_eq!(host.user("root").gid()?, 0);
@@ -98,13 +125,11 @@ fn exercise(host: &Host) -> Result<()> {
         Err(Error::NotFound { kind: "group", .. })
     ));
 
+    Ok(())
+}
+
+fn exercise_kernel(host: &Host, root: &str) -> Result<()> {
     let info = host.system_info()?;
-    let package = match info.distribution.as_str() {
-        "alpine" => "busybox",
-        "debian" | "ubuntu" => "base-files",
-        "fedora" | "rocky" | "almalinux" => "filesystem",
-        other => panic!("add a known installed package for {other}"),
-    };
     assert!(!info.kernel.is_empty());
     assert!(!info.architecture.is_empty());
     assert_eq!(host.environment()?["LC_ALL"], "C");
@@ -122,14 +147,25 @@ fn exercise(host: &Host) -> Result<()> {
     assert!(host.sysctl("kernel..pid_max").value().is_err());
     assert!(host.mount_point("/").is_mounted()?);
     assert_eq!(host.mount_point("/proc").info()?.filesystem, "proc");
-    assert!(!host.mount_point(&root).is_mounted()?);
+    assert!(!host.mount_point(root).is_mounted()?);
     assert!(matches!(
-        host.mount_point(&root).info(),
+        host.mount_point(root).info(),
         Err(Error::NotFound {
             kind: "mount point",
             ..
         })
     ));
+    Ok(())
+}
+
+fn exercise_packages(host: &Host) -> Result<()> {
+    let info = host.system_info()?;
+    let package = match info.distribution.as_str() {
+        "alpine" => "busybox",
+        "debian" | "ubuntu" => "base-files",
+        "fedora" | "rocky" | "almalinux" => "filesystem",
+        other => panic!("add a known installed package for {other}"),
+    };
     assert!(host.package(package).is_installed()?);
     assert!(!host.package(package).version()?.unwrap().is_empty());
     assert!(
@@ -143,6 +179,10 @@ fn exercise(host: &Host) -> Result<()> {
     );
     assert!(host.package("--help").is_installed().is_err());
 
+    Ok(())
+}
+
+fn exercise_processes_services(host: &Host) -> Result<()> {
     // Minimal images may omit pgrep. Missing tools must produce errors.
     if host.run("command -v pgrep >/dev/null")?.success() {
         assert!(!host.process("testinfra_nope").is_running()?);
@@ -178,7 +218,7 @@ impl Container {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let name = format!("testinfra-rs-{}-{unique}", std::process::id());
+        let name = format!("testinfra-rs-{}-{unique}", process::id());
         let container = Container(name);
         let output = Command::new("docker")
             .args(["run", "--detach", "--name", &container.0, image])
@@ -196,7 +236,7 @@ impl Container {
 #[test]
 #[ignore = "requires Docker; creates and removes a Linux test container"]
 fn docker_resources() -> Result<()> {
-    let image = std::env::var("TESTINFRA_TEST_IMAGE").unwrap_or_else(|_| "alpine:3".into());
+    let image = env::var("TESTINFRA_TEST_IMAGE").unwrap_or_else(|_| "alpine:3".into());
     let container = Container::start(&image, &["sh", "-c", "while :; do sleep 3600; done"])?;
     let host = Host::docker(&container.0)?;
     exercise(&host)?;
@@ -207,9 +247,7 @@ fn docker_resources() -> Result<()> {
     assert_eq!(host.run("exit 127")?.exit_status, 127);
     assert_eq!(host.check_output("printf ''")?, "");
     assert_eq!(host.run("head -c 65536 /dev/zero")?.stdout, vec![0; 65536]);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
+    let runtime = Builder::new_current_thread().enable_all().build()?;
     assert_eq!(
         runtime.block_on(async { host.check_output("printf async") })?,
         "async"
@@ -287,7 +325,7 @@ time.sleep(300)
             ready = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(100));
     }
     assert!(ready, "socket fixture did not become ready");
     let specs = host.file("/tmp/socket-fixture.ready").content()?;

@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use procfs_core::{FromBufRead, process::MountInfos};
@@ -80,7 +81,7 @@ impl Sysctl<'_> {
             .trim_end_matches('\n')
             .into())
     }
-    pub fn value_as<T: std::str::FromStr>(&self) -> Result<T> {
+    pub fn value_as<T: FromStr>(&self) -> Result<T> {
         let value = self.value()?;
         value
             .parse()

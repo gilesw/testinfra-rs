@@ -8,4 +8,5 @@
 - Literal command execution through std::process and Bollard, preserving binary stdout.
 - Native Linux, Alpine/Debian/Fedora, live systemd, and Docker socket tests.
 - Rust 1.98.1, shared mise checks, and tested release automation reused from tickerapp-rs.
-- Parallel, file-filtered hk linting based on congru, with development tools pinned by mise.
+- Parallel, file-filtered hk linting for fast feedback, with development tools pinned by mise.
+- Enforced Clippy style and complexity limits, with resource-specific integration test helpers.

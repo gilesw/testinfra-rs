@@ -23,7 +23,7 @@ steps {
     check = new Command { argv = List("hk", "validate") }
   }
   ["clippy"] {
-    glob = List("**/*.rs", "Cargo.toml", "Cargo.lock", "mise.toml", "hk.pkl")
+    glob = List("**/*.rs", "Cargo.toml", "Cargo.lock", "clippy.toml", "mise.toml", "hk.pkl")
     profiles = List("slow")
     check = new Command { argv = List("cargo", "clippy", "--all-targets", "--locked", "--", "-D", "warnings") }
   }

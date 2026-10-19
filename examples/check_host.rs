@@ -1,7 +1,8 @@
+use std::env;
 use testinfra::{Host, Result};
 
 fn main() -> Result<()> {
-    let url = std::env::args().nth(1).unwrap_or_else(|| "local://".into());
+    let url = env::args().nth(1).unwrap_or_else(|| "local://".into());
     let host = Host::from_url(&url)?;
     assert!(host.file("/etc/passwd").is_file()?);
     assert!(host.file("/etc/passwd").contains("(?m)^root:")?);

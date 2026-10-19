@@ -13,14 +13,14 @@ target-side agent dependency.
 
 ## Use
 
-The crate is not published. Add this checkout to your test project's `Cargo.toml`:
+Add the crate to your test project's `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-testinfra = { path = "../testinfra-rs" }
+testinfra = "0.1"
 ```
 
-After the first release, use `testinfra = "0.1"` under `[dev-dependencies]`.
+To develop against a checkout, use `testinfra = { path = "../testinfra-rs" }` instead.
 
 Create `tests/configuration.rs`:
 
@@ -198,7 +198,7 @@ daemon, Git, and the platform shell are prerequisites. The shared gate runs hk
 lint checks, then Rust and release-script tests. CI uses the same tasks with
 pinned Rust 1.98.1, plus the environment-specific tests below.
 
-Lint configuration lives in `hk.pkl`, following the congru setup. hk runs
+Lint configuration lives in `hk.pkl`, with shared local and CI checks. hk runs
 independent checks concurrently and filters them by relevant files:
 
 ```sh
@@ -213,6 +213,12 @@ The pre-commit hook uses working-tree contents and never fixes, stages, or stash
 Clippy/rustdoc use hk's `slow` profile; the common gate and CI always enable it.
 `mise run fmt` is the explicit command that rewrites Rust formatting.
 Release-script tests remain mandatory in `mise run test` and `mise run check`.
+
+The Clippy gate also enables explicit import/formatting style checks and the
+complexity limits in `clippy.toml`: cognitive complexity 25, 100 lines per
+function, 7 arguments, nesting depth 6, type complexity 250, and 3 boolean
+parameters. `mise run lint:metrics` runs this gate on all targets. Warnings fail
+the local gate and CI. The configuration ships with the crate.
 
 Real Docker tests are opt-in. They create a uniquely named container, make fixture
 files under `/tmp`, and remove the container on exit. Images are pulled by Docker
@@ -257,7 +263,7 @@ publishes through crates.io trusted publishing. The initial `0.1.0` upload is
 manual because the crate must exist before configuring its trusted publisher.
 
 Package metadata, a dated changelog, and an explicit archive file list are included.
-The first release has been prepared; preparation and dry runs do not upload a crate.
+Dry runs verify the packaged source without uploading a crate.
 
 ## Existing alternatives
 

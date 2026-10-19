@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use crate::{Error, Host, Result, host::quote};
 
 macro_rules! resource {
@@ -178,7 +180,7 @@ pub(crate) fn identifier(value: &str) -> Result<String> {
     quote(value)
 }
 
-fn number<T: std::str::FromStr>(value: &str) -> Result<T> {
+fn number<T: FromStr>(value: &str) -> Result<T> {
     value
         .parse()
         .map_err(|_| Error::Parse(format!("expected a number, got {value:?}")))

@@ -24,6 +24,10 @@ run = "hk check --all --check --profile slow"
 description = "Fast hk checks selected by changed files"
 run = "hk check --check"
 
+[tasks."lint:metrics"]
+description = "Clippy style and complexity gate with configured thresholds"
+run = "hk check --all --check --profile slow --step clippy"
+
 [tasks.test]
 description = "Unit, documentation, and native Linux tests"
 run = ["cargo test --locked", "mise run test:scripts"]
