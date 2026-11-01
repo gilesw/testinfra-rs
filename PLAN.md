@@ -75,9 +75,9 @@ At completion of that milestone, no crate had been published.
 
 ## Release automation alignment — 2026-10-19
 
-- Align the minimum/pinned Rust version with tickerapp-rs at 1.98.1; the 1.85
+- Set the minimum/pinned Rust version to 1.98.1; the 1.85
   checks above record the earlier implementation milestone.
-- Reuse tickerapp-rs mise tasks, release scripts and their isolated tests,
+- Add mise tasks, release scripts and their isolated tests,
   git-cliff configuration, and reusable lint/test/release workflows.
 - Move lint scheduling to hk, with parallel checks, with a fast file-filtered path
   and a full profile for Clippy/rustdoc. Keep release-script tests in the common

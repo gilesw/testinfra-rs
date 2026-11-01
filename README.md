@@ -4,7 +4,7 @@ A small, Testinfra-inspired Rust library for checking the actual configuration o
 Linux hosts and running Linux Docker containers. Write ordinary `#[test]` functions
 and run them with `cargo test`.
 
-Requires Rust **1.98.1** or newer, matching tickerapp-rs. Development tooling is
+Requires Rust **1.98.1** or newer. Development tooling is
 pinned in `mise.toml`.
 
 This is an initial implementation, not a complete API-compatible port of Python
@@ -272,7 +272,7 @@ live systemd validation as well as the Docker matrix.
 
 ## Releases
 
-The [release guide](RELEASING.md) describes the reused tickerapp-rs automation:
+The [release guide](RELEASING.md) describes the release automation:
 `mise run bump` updates the version/changelog, `mise run tag` creates and pushes
 an annotated release tag, `mise run release` validates a tagged dry run, and
 `mise run release:publish` uploads that exact commit. Pushing later release tags

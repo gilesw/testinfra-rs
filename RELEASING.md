@@ -1,8 +1,7 @@
 # Releasing testinfra
 
-Release automation and its isolated tests are reused from
-[tickerapp-rs](https://github.com/gilesw/tickerapp-rs). Rust and tooling versions
-are pinned in `mise.toml`; `Cargo.toml` declares the same Rust 1.98.1 minimum.
+Release scripts have isolated tests. Rust and tooling versions are pinned in
+`mise.toml`; `Cargo.toml` declares the same Rust 1.98.1 minimum.
 Lint scheduling lives in `hk.pkl`, using the shared local and CI gate. Mise
 installs and exposes all development tools; hk runs the lint commands.
 
