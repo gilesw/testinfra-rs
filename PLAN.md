@@ -262,3 +262,16 @@ have separate budgets; callers needing one end-to-end deadline must account
 for that setup time. Local process groups and remote command cancellation remain
 outside the guarantees above. The consumer must keep its transcript/redaction
 and cleanup ownership, then validate its adapter and failure recovery.
+
+### Consumer migration prerequisite: constructor budgets
+
+Docker context discovery and the initial Linux probe now share the constructor's
+budget. The host retains the full configured budget for subsequent commands.
+A caller can subtract construction elapsed time before executing a command to
+keep one end-to-end budget. This supersedes the earlier per-phase constructor
+budgets; local discovery cleanup can still take up to one additional second.
+
+The subprocess regression spends two seconds discovering a context, then connects
+to a fixture socket that never answers the Linux probe. It returns a typed timeout
+at the shared three-second deadline. The default gate and Debian trixie-slim
+resource and command tests pass. No new dependency is required.

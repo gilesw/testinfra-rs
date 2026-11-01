@@ -208,8 +208,9 @@ assert_eq!(result.stdout_text()?, "literal $(text)");
   for a per-check override. Zero and unrepresentable timeouts are rejected.
   `Host::docker_with_timeout` and `Host::docker_as_with_timeout` also configure
   Docker context discovery and the initial Linux probe. Discovery and the probe
-  each get their own budget. Multi-command resource methods have a budget per
-  command, not one deadline for the whole method.
+  share one construction budget; subsequent commands get the full host budget.
+  Multi-command resource methods have a budget per command, not one deadline for
+  the whole method.
 - A hung command returns `Error::Timeout { timeout }`, never `false` or an empty
   result. Catch that error to report the affected check and continue; `?` ends
   the current test, while independent tests can still run. Partial command output

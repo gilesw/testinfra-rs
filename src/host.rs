@@ -175,19 +175,25 @@ impl Host {
                 "expected a Docker container name or ID".into(),
             ));
         }
+        let started = Instant::now();
+        let endpoint = run_sync(docker_endpoint(timeout))?;
+        let remaining = timeout
+            .checked_sub(started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(Error::Timeout { timeout })?;
         let host = Self {
             backend: Backend::Docker {
                 container: container.into(),
                 user,
-                endpoint: run_sync(docker_endpoint(timeout))?,
+                endpoint,
             },
-            timeout,
+            timeout: remaining,
             output_limits: OutputLimits::default(),
         };
         if host.check_output("uname -s")?.trim() != "Linux" {
             return Err(Error::Unsupported("Docker target must run Linux".into()));
         }
-        Ok(host)
+        host.with_timeout(timeout)
     }
 
     /// Accept `local://` or `docker://[user@]container`.
