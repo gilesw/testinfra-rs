@@ -2,7 +2,7 @@ use std::{
     env, process,
     process::Command,
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use testinfra::{Error, Host, Result};
 use tokio::runtime::Builder;
@@ -240,6 +240,7 @@ fn docker_resources() -> Result<()> {
     let container = Container::start(&image, &["sh", "-c", "while :; do sleep 3600; done"])?;
     let host = Host::docker(&container.0)?;
     exercise(&host)?;
+    exercise_deadlines(&host)?;
     let output = host.run("printf 'a\\000b'; printf problem >&2; exit 42")?;
     assert_eq!(output.stdout, b"a\0b");
     assert_eq!(output.stderr, "problem");
@@ -270,6 +271,26 @@ fn docker_resources() -> Result<()> {
         Err(Error::Docker(_))
     ));
     assert!(Host::docker(&container.0).is_err());
+    Ok(())
+}
+
+fn exercise_deadlines(host: &Host) -> Result<()> {
+    let path = "/tmp/testinfra-deadline-fifo";
+    assert!(host.exec("mkfifo", &[path])?.success());
+    let bounded = host.clone().with_timeout(Duration::from_millis(500))?;
+    let started = Instant::now();
+    assert!(matches!(
+        bounded.file(path).content_bytes(),
+        Err(Error::Timeout { .. })
+    ));
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(bounded.file("/etc/passwd").exists()?);
+    assert!(matches!(
+        bounded.run("sleep 30"),
+        Err(Error::Timeout { .. })
+    ));
+    assert_eq!(bounded.check_output("printf recovered")?, "recovered");
+    // Timed-out remote reads belong to the disposable container's cleanup.
     Ok(())
 }
 

@@ -2,10 +2,12 @@
 
 use std::{
     env,
+    fs::OpenOptions,
     net::{TcpListener, UdpSocket},
     os::unix::net::UnixListener,
+    time::Duration,
 };
-use testinfra::{Host, Result};
+use testinfra::{Error, Host, Result};
 
 #[test]
 fn listeners_follow_actual_kernel_state() -> Result<()> {
@@ -63,5 +65,21 @@ fn native_kernel_resources() -> Result<()> {
     assert_eq!(host.mount_point("/proc").info()?.filesystem, "proc");
     assert_eq!(host.environment()?["LC_ALL"], "C");
     assert_eq!(host.environment()?["PATH"], env::var("PATH").unwrap());
+    Ok(())
+}
+
+#[test]
+fn blocked_resource_read_does_not_prevent_the_next_check() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let fifo = directory.path().join("blocked-read");
+    let host = Host::local()?;
+    assert!(host.exec("mkfifo", &[fifo.to_str().unwrap()])?.success());
+    // Holding both ends open gives the reader neither data nor EOF.
+    let writer = OpenOptions::new().read(true).write(true).open(&fifo)?;
+    let bounded = host.with_timeout(Duration::from_secs(1))?;
+    let result = bounded.file(fifo.to_str().unwrap()).content_bytes();
+    drop(writer);
+    assert!(matches!(result, Err(Error::Timeout { .. })));
+    assert!(bounded.file("/etc/passwd").exists()?);
     Ok(())
 }

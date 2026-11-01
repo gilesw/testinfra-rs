@@ -1,11 +1,13 @@
 use std::{
     env,
+    future::Future,
     io::{self, ErrorKind},
     iter,
-    process::Command,
+    process::{Output, Stdio},
     result, str, thread,
+    time::{Duration, Instant},
 };
-use tokio::runtime::Builder;
+use tokio::{io::AsyncReadExt, process::Command, runtime::Builder, time::timeout};
 
 use bollard::{
     Docker,
@@ -20,6 +22,9 @@ use futures_util::StreamExt;
 pub enum Error {
     #[error(transparent)]
     Io(#[from] io::Error),
+    /// The wait expired. A remote command or local descendants may still run.
+    #[error("system check timed out after {timeout:?}")]
+    Timeout { timeout: Duration },
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("unsupported: {0}")]
@@ -72,7 +77,10 @@ enum Backend {
 #[derive(Debug, Clone)]
 pub struct Host {
     backend: Backend,
+    timeout: Duration,
 }
+
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Host {
     pub fn local() -> Result<Self> {
@@ -83,15 +91,35 @@ impl Host {
         }
         Ok(Self {
             backend: Backend::Local,
+            timeout: DEFAULT_TIMEOUT,
         })
     }
 
     pub fn docker(container: &str) -> Result<Self> {
-        Self::docker_inner(container, None)
+        Self::docker_with_timeout(container, DEFAULT_TIMEOUT)
+    }
+
+    /// Construct a Docker host with a timeout for discovery and each command.
+    pub fn docker_with_timeout(container: &str, timeout: Duration) -> Result<Self> {
+        Self::docker_inner(container, None, timeout)
+    }
+
+    /// Set the timeout for each subsequent command, including resource reads.
+    /// A resource method that executes several commands gets this budget per command.
+    /// Clone the host first to give a single check a different budget.
+    pub fn with_timeout(mut self, timeout: Duration) -> Result<Self> {
+        validate_timeout(timeout)?;
+        self.timeout = timeout;
+        Ok(self)
     }
 
     /// Execute as a Docker username or UID, optionally followed by `:group`.
     pub fn docker_as(container: &str, user: &str) -> Result<Self> {
+        Self::docker_as_with_timeout(container, user, DEFAULT_TIMEOUT)
+    }
+
+    /// Like `docker_as`, with a timeout for discovery and each command.
+    pub fn docker_as_with_timeout(container: &str, user: &str, timeout: Duration) -> Result<Self> {
         if user.is_empty()
             || user.starts_with('-')
             || !user
@@ -100,10 +128,11 @@ impl Host {
         {
             return Err(Error::InvalidInput("invalid Docker user".into()));
         }
-        Self::docker_inner(container, Some(user.to_owned()))
+        Self::docker_inner(container, Some(user.to_owned()), timeout)
     }
 
-    fn docker_inner(container: &str, user: Option<String>) -> Result<Self> {
+    fn docker_inner(container: &str, user: Option<String>, timeout: Duration) -> Result<Self> {
+        validate_timeout(timeout)?;
         if container.is_empty()
             || !container.as_bytes()[0].is_ascii_alphanumeric()
             || !container
@@ -118,8 +147,9 @@ impl Host {
             backend: Backend::Docker {
                 container: container.into(),
                 user,
-                endpoint: docker_endpoint()?,
+                endpoint: run_sync(docker_endpoint(timeout))?,
             },
+            timeout,
         };
         if host.check_output("uname -s")?.trim() != "Linux" {
             return Err(Error::Unsupported("Docker target must run Linux".into()));
@@ -151,7 +181,7 @@ impl Host {
     }
 
     /// Run an explicit shell script. Nonzero target status is returned as data.
-    /// No timeout is imposed; callers must bound commands that may block.
+    /// Uses the host timeout (30 seconds by default).
     pub fn run(&self, script: &str) -> Result<CommandResult> {
         self.exec("sh", &["-c", script])
     }
@@ -165,46 +195,42 @@ impl Host {
                 "program must be nonempty and arguments cannot contain NUL".into(),
             ));
         }
-        match &self.backend {
-            Backend::Local => {
-                let output = Command::new(program)
-                    .args(args)
-                    .env("LC_ALL", "C")
-                    .output()?;
-                Ok(CommandResult {
-                    exit_status: output.status.code().ok_or_else(|| {
-                        Error::Transport(format!("shell terminated by {}", output.status))
-                    })?,
-                    stdout: output.stdout,
-                    stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                })
+        run_sync(async {
+            match &self.backend {
+                Backend::Local => {
+                    let output = local_output(
+                        Command::new(program).args(args).env("LC_ALL", "C"),
+                        self.timeout,
+                    )
+                    .await?;
+                    Ok(CommandResult {
+                        exit_status: output.status.code().ok_or_else(|| {
+                            Error::Transport(format!("command terminated by {}", output.status))
+                        })?,
+                        stdout: output.stdout,
+                        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                    })
+                }
+                Backend::Docker {
+                    container,
+                    user,
+                    endpoint,
+                } => timeout(
+                    self.timeout,
+                    docker_run(
+                        container,
+                        user.as_deref(),
+                        endpoint.as_deref(),
+                        program,
+                        args,
+                    ),
+                )
+                .await
+                .map_err(|_| Error::Timeout {
+                    timeout: self.timeout,
+                })?,
             }
-            Backend::Docker {
-                container,
-                user,
-                endpoint,
-            } => {
-                // Keep the synchronous API usable from ordinary tests and Tokio tests.
-                // A scoped thread prevents nested-runtime panics in async callers.
-                thread::scope(|scope| {
-                    scope
-                        .spawn(|| {
-                            Builder::new_current_thread()
-                                .enable_all()
-                                .build()?
-                                .block_on(docker_run(
-                                    container,
-                                    user.as_deref(),
-                                    endpoint.as_deref(),
-                                    program,
-                                    args,
-                                ))
-                        })
-                        .join()
-                        .map_err(|_| Error::Transport("Docker execution worker panicked".into()))?
-                })
-            }
-        }
+        })
     }
 
     /// Run shell code and require one of the listed exit statuses.
@@ -235,29 +261,102 @@ impl Host {
     }
 }
 
+fn validate_timeout(limit: Duration) -> Result<()> {
+    if limit.is_zero() || Instant::now().checked_add(limit).is_none() {
+        return Err(Error::InvalidInput(
+            "timeout must be positive and representable".into(),
+        ));
+    }
+    Ok(())
+}
+
+// A scoped worker keeps synchronous calls usable inside an existing Tokio runtime.
+fn run_sync<T: Send>(future: impl Future<Output = Result<T>> + Send) -> Result<T> {
+    thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let runtime = Builder::new_current_thread().enable_all().build()?;
+                let result = runtime.block_on(future);
+                // Resolver work may use blocking threads; shutdown must not extend a deadline.
+                runtime.shutdown_background();
+                result
+            })
+            .join()
+            .map_err(|_| Error::Transport("execution worker panicked".into()))?
+    })
+}
+
+async fn local_output(command: &mut Command, limit: Duration) -> Result<Output> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Transport("missing stdout pipe".into()))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::Transport("missing stderr pipe".into()))?;
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let result = timeout(limit, async {
+        let (status, _, _) = futures_util::try_join!(
+            child.wait(),
+            stdout.read_to_end(&mut out),
+            stderr.read_to_end(&mut err)
+        )?;
+        Ok::<_, io::Error>(Output {
+            status,
+            stdout: out,
+            stderr: err,
+        })
+    })
+    .await;
+    match result {
+        Ok(Ok(output)) => Ok(output),
+        other => {
+            // Close pipes without waiting for descendants; bound direct-child cleanup too.
+            drop(stdout);
+            drop(stderr);
+            let _ = timeout(Duration::from_secs(1), child.kill()).await;
+            match other {
+                Ok(Err(error)) => Err(error.into()),
+                Err(_) => Err(Error::Timeout { timeout: limit }),
+                Ok(Ok(_)) => unreachable!(),
+            }
+        }
+    }
+}
+
 // Bollard handles Docker's wire protocol. Ask the CLI to resolve its selected
 // context when available, rather than implementing Docker config/context parsing.
-fn docker_endpoint() -> Result<Option<String>> {
+async fn docker_endpoint(limit: Duration) -> Result<Option<String>> {
     let has_context = env::var_os("DOCKER_CONTEXT").is_some_and(|s| !s.is_empty());
     if !has_context && env::var_os("DOCKER_HOST").is_some_and(|s| !s.is_empty()) {
         return Ok(None);
     }
-    match Command::new("docker")
-        .args([
+    match local_output(
+        Command::new("docker").args([
             "context",
             "inspect",
             "--format",
             "{{.Endpoints.docker.Host}}",
-        ])
-        .output()
+        ]),
+        limit,
+    )
+    .await
     {
         Ok(output) if output.status.success() => {
             let endpoint =
                 String::from_utf8(output.stdout).map_err(|e| Error::Parse(e.to_string()))?;
             Ok(Some(endpoint.trim().to_owned()))
         }
-        Err(e) if e.kind() == ErrorKind::NotFound && !has_context => Ok(None),
-        Err(e) => Err(e.into()),
+        Err(Error::Io(e)) if e.kind() == ErrorKind::NotFound && !has_context => Ok(None),
+        Err(e) => Err(e),
         Ok(output) => Err(Error::Transport(
             String::from_utf8_lossy(&output.stderr).into_owned(),
         )),
@@ -340,7 +439,63 @@ mod tests {
     fn shell() -> Host {
         Host {
             backend: Backend::Local,
+            timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    #[test]
+    fn timeout_is_an_error_and_the_host_remains_usable() -> Result<()> {
+        let host = shell().with_timeout(Duration::from_secs(1))?;
+        let started = Instant::now();
+        assert!(matches!(
+            host.exec("sleep", &["30"]),
+            Err(Error::Timeout { .. })
+        ));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(host.check_output("printf recovered")?, "recovered");
+        assert!(matches!(
+            host.run_expect(&[0], "exec sleep 30"),
+            Err(Error::Timeout { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn inherited_pipes_do_not_extend_the_deadline() -> Result<()> {
+        let host = shell().with_timeout(Duration::from_secs(1))?;
+        let started = Instant::now();
+        assert!(matches!(
+            host.run("sleep 5 & exit 0"),
+            Err(Error::Timeout { .. })
+        ));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        Ok(())
+    }
+
+    #[test]
+    fn timeouts_work_inside_a_current_thread_runtime() -> Result<()> {
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        runtime.block_on(async {
+            let host = shell().with_timeout(Duration::from_secs(1))?;
+            assert!(matches!(
+                host.run("exec sleep 30"),
+                Err(Error::Timeout { .. })
+            ));
+            assert!(host.run("true")?.success());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn invalid_timeouts_fail_before_discovery() {
+        assert!(matches!(
+            shell().with_timeout(Duration::ZERO),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            Host::docker_with_timeout("example", Duration::MAX),
+            Err(Error::InvalidInput(_))
+        ));
     }
 
     #[test]

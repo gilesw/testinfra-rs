@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 — 2026-11-01
+
+- Bound commands and resource-read commands with a configurable 30-second
+  default timeout. Report `Error::Timeout` so callers can continue other checks.
+- Add Docker constructor timeout options, including context discovery and the
+  initial Linux probe. Document direct-child and remote cleanup limits.
+- Reuse Tokio process support; stdin and a public async API remain deferred.
+
 ## 0.1.0 — 2026-10-19
 
 - Initial Testinfra-inspired Rust library for local Linux and existing Docker containers.

@@ -1,6 +1,6 @@
 [package]
 name = "testinfra"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98.1"
 description = "Testinfra-inspired infrastructure assertions for Linux and Docker"
@@ -22,7 +22,7 @@ procfs-core = { version = "0.18", default-features = false }
 regex = "1"
 shlex = "2"
 thiserror = "2"
-tokio = { version = "1", features = ["rt", "net", "time"] }
+tokio = { version = "1", features = ["rt", "net", "time", "process", "io-util"] }
 unescaper = "0.2"
 
 [dev-dependencies]

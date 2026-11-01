@@ -146,9 +146,26 @@ assert_eq!(result.stdout_text()?, "literal $(text)");
 - Docker execution uses Bollard's Engine API client, output stream, and exec
   inspection. Target exit statuses remain separate from Docker API errors,
   including containers that stop between checks.
-- Commands are synchronous, stdin is closed, and no execution timeout is imposed.
-  Bound potentially blocking shell commands yourself, for example using Linux
-  `timeout`. Output is buffered in memory, so avoid unbounded command output.
+- Commands are synchronous and stdin is closed. Each command has a 30-second
+  timeout by default, including commands used by resource reads. Use
+  `host.with_timeout(Duration::from_secs(5))?` to change it; clone the host first
+  for a per-check override. Zero and unrepresentable timeouts are rejected.
+  `Host::docker_with_timeout` and `Host::docker_as_with_timeout` also configure
+  Docker context discovery and the initial Linux probe. Discovery and the probe
+  each get their own budget. Multi-command resource methods have a budget per
+  command, not one deadline for the whole method.
+- A hung command returns `Error::Timeout { timeout }`, never `false` or an empty
+  result. Catch that error to report the affected check and continue; `?` ends
+  the current test, while independent tests can still run. Partial command output
+  is discarded on timeout. Timeout errors do not include arguments or output.
+- Local timeout cleanup requests termination of the direct child and waits up to
+  one additional second to reap it. Descendants may survive; inherited output
+  pipes are closed without waiting for them. A Docker timeout stops waiting for
+  the API or output stream; it does not confirm remote command termination. The
+  caller owns remote cleanup. A subsequent check can use the same host.
+- These are synchronous calls, even with a deadline. Async callers should still
+  use a blocking worker when runtime responsiveness matters. Output is buffered
+  in memory, so avoid unbounded command output.
 - `run()` and `check_output()` deliberately accept shell code. Use `exec()` for
   literal arguments, especially values from external input. Inspection is performed
   as the current local user or selected Docker user; there is no automatic sudo.

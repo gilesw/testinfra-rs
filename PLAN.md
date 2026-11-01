@@ -101,5 +101,60 @@ At completion of that milestone, no crate had been published.
 
 SSH and Windows targets, non-Docker transports, sudo, container lifecycle APIs,
 firewall/block-device/configuration-management modules, a standalone spec runner,
-and command cancellation/timeouts. Existing container lifecycle crates can be
-combined with this library. Each deferred area needs its own scoped plan.
+and guaranteed remote command cancellation. Existing container lifecycle crates
+can be combined with this library. Each deferred area needs its own scoped plan.
+
+## 0.2.0: bounded system checks
+
+A hung observation must return a typed timeout error so a caller can report it
+and continue with independent checks. This extends Python Testinfra's local and
+Docker execution capabilities; it is not a parity claim.
+
+- Keep the synchronous API. Default to 30 seconds per underlying command, with
+  validated host overrides and constructor overrides for Docker discovery.
+- Bound local output collection and Docker negotiation, exec creation, streaming,
+  and inspection. A multi-command resource method has a separate budget per
+  command. Docker context discovery and its initial probe have separate budgets.
+- Return `Error::Timeout`, distinct from absence, nonzero status, and transport
+  failure. Discard partial output; do not put payloads or arguments in this error.
+- Request termination of the local direct child and allow up to one extra second
+  for reaping. Close inherited pipes rather than waiting for descendants. Do not
+  promise descendant termination or cancellation of Docker's remote command.
+- Let the caller or test runner decide continuation, reporting and fixture cleanup.
+  Keep blocking-worker adapters in async callers. Stdin and a public async API
+  remain separate proposed work, not prerequisites for deadlines.
+- Reuse Tokio process and time support instead of custom process polling and
+  pipe-reader threads. Enabling its process feature adds signal-hook-registry
+  to the lockfile; no new direct dependency is required.
+- Gate: formatting and common checks; local timeout and subsequent-success tests,
+  inherited-pipe coverage, async-caller coverage, invalid budgets, and Docker
+  blocked-resource-read and subsequent-success tests. Record platform limits.
+
+Validation on 2026-11-01:
+
+- `mise run fmt` and `mise run check`: passed (Clippy, rustdoc, unit/doc tests,
+  lint tools and release-script tests).
+- 14 unit tests passed on macOS and in a disposable Linux container. The Linux
+  resource tests passed, including a FIFO read that times out before a successful
+  independent file check. Local Linux infrastructure and socket checks passed.
+- `mise run test:docker`: passed against Alpine, including a blocked FIFO read,
+  a hung command and successful subsequent checks on the same host.
+- `cargo package --allow-dirty --locked`: built and verified the 0.2.0 archive.
+- No hosted workflow, live systemd test or full distro matrix was run for this
+  change. The candidate is not published. Congru adoption and stdin remain open;
+  this does not complete the original combined R2 deliverable.
+
+
+Consumer smoke validation on 2026-11-01:
+
+- Temporarily selected this local 0.2.0 candidate in Congru and ran two supervised
+  acceptance tests with existing Debian/systemd images. Both passed (4.930 seconds
+  of test execution; 19.712 seconds including compilation and test startup).
+- The smoke test included a temporary FIFO probe: a one-second resource-read
+  deadline returned `Error::Timeout`, then file and service checks succeeded on
+  the same host. Operator access and the existing stdin helper also passed.
+- The diversion lifecycle covered check, apply, unchanged apply and retirement.
+  The supervisor reported successful cleanup of both projects.
+- Restored the consumer manifest, lockfile and temporary probe after the run.
+  This is focused compatibility evidence, not full-suite validation or permanent
+  adoption. Existing images were reused; no new engine image was built.
