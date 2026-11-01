@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add binary stdin through `exec_with_input` and `run_with_input` on local Linux
+  and Docker. Transfer input and output concurrently under one command timeout,
+  close stdin after the payload, and preserve results when a command exits early.
+- Keep the existing stderr representation and output-buffering behaviour;
+  lossless stderr and output limits remain separate work.
+
 ## 0.2.0 — 2026-11-01
 
 - Bound commands and resource-read commands with a configurable 30-second

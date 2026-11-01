@@ -63,6 +63,23 @@ An executable example is included:
 cargo run --example check_host -- docker://web
 ```
 
+## Commands with input
+
+```rust,no_run
+use testinfra::{Host, Result};
+
+fn check_input(host: &Host) -> Result<()> {
+    let result = host.exec_with_input("cat", &[], b"binary\0input")?;
+    assert_eq!(result.stdout, b"binary\0input");
+    assert!(result.success());
+    Ok(())
+}
+```
+
+Stderr keeps the existing lossy UTF-8 representation, and output capture has no
+size limit. Callers replacing another command runner must account for those
+limits and the timeout cleanup behaviour described below.
+
 ## Resources
 
 Every check returns a `Result`. An absent resource usually produces `false` or
@@ -85,6 +102,8 @@ Resources are queried on demand without caching.
 | `host.socket(specification)` | TCP/Unix stream listeners and unconnected bound UDP sockets |
 | `host.run(script)` | explicit shell command with exit status, stdout bytes, stderr |
 | `host.exec(program, args)` | program invoked directly with literal arguments |
+| `host.exec_with_input(program, args, input)` | literal arguments and binary stdin, followed by EOF |
+| `host.run_with_input(script, input)` | explicit shell code and binary stdin, followed by EOF |
 | `host.run_expect(statuses, script)` | shell command requiring an accepted exit status |
 | `host.check_output(script)` | UTF-8 stdout, requiring a successful exit |
 
@@ -146,8 +165,15 @@ assert_eq!(result.stdout_text()?, "literal $(text)");
 - Docker execution uses Bollard's Engine API client, output stream, and exec
   inspection. Target exit statuses remain separate from Docker API errors,
   including containers that stop between checks.
-- Commands are synchronous and stdin is closed. Each command has a 30-second
-  timeout by default, including commands used by resource reads. Use
+- Commands are synchronous. `exec_with_input` and `run_with_input` send binary
+  stdin and close it after the payload. Empty input sends EOF immediately;
+  `exec` and `run` use empty input. Input and both output streams are transferred
+  concurrently. A command may exit without consuming all input; its output and
+  exit status are still returned. Input is never inserted into shell code or
+  error messages. These methods do not provide an interactive terminal.
+- Each command has a 30-second
+  timeout by default, covering input transfer and output collection together,
+  including commands used by resource reads. Use
   `host.with_timeout(Duration::from_secs(5))?` to change it; clone the host first
   for a per-check override. Zero and unrepresentable timeouts are rejected.
   `Host::docker_with_timeout` and `Host::docker_as_with_timeout` also configure
@@ -180,7 +206,7 @@ Reuse existing crates for general-purpose functionality:
 - [bollard](https://docs.rs/bollard/) handles Docker's Engine API, stream framing,
   API version negotiation, and command exit status inspection.
 - [tokio](https://docs.rs/tokio/) and [futures-util](https://docs.rs/futures-util/)
-  drive Bollard behind the synchronous test API.
+  drive local process pipes and Bollard behind the synchronous test API.
 - [shlex](https://docs.rs/shlex/) quotes literal shell arguments.
 - [etc-os-release](https://docs.rs/etc-os-release/) parses distribution data read
   from the target, rather than inspecting the machine running the tests.
@@ -243,13 +269,14 @@ when missing. They exercise both successful checks and errors, including a stopp
 container. The default image is Alpine:
 
 ```sh
-cargo test --test infrastructure -- --ignored --nocapture
-TESTINFRA_TEST_IMAGE=debian:bookworm-slim cargo test --test infrastructure -- --ignored
-TESTINFRA_TEST_IMAGE=fedora:44 cargo test --test infrastructure -- --ignored
+mise run test:docker
+TESTINFRA_TEST_IMAGE=debian:trixie-slim mise run test:docker
+TESTINFRA_TEST_IMAGE=fedora:44 mise run test:docker
 ```
 
-Equivalent tasks are `mise run test:docker` (honouring `TESTINFRA_TEST_IMAGE`),
-`mise run test:sockets`, and `mise run test:systemd`.
+`mise run test:docker` runs resource and stdin checks, honouring
+`TESTINFRA_TEST_IMAGE`. Separate tasks are `mise run test:sockets` and
+`mise run test:systemd`.
 
 CI runs native Linux tests and the Docker suite on Alpine, Debian, and Fedora.
 The socket fixture uses `python:3.13-alpine` to open TCP, UDP, and Unix listeners;

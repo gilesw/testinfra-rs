@@ -13,7 +13,7 @@ From a Git checkout with the mise tools installed:
 mise install
 mise run check
 mise run test:docker
-TESTINFRA_TEST_IMAGE=debian:bookworm-slim mise run test:docker
+TESTINFRA_TEST_IMAGE=debian:trixie-slim mise run test:docker
 TESTINFRA_TEST_IMAGE=fedora:44 mise run test:docker
 mise run test:sockets
 cargo package --list

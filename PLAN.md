@@ -158,3 +158,66 @@ Consumer smoke validation on 2026-11-01:
 - Restored the consumer manifest, lockfile and temporary probe after the run.
   This is focused compatibility evidence, not full-suite validation or permanent
   adoption. Existing images were reused; no new engine image was built.
+
+
+## Next: command stdin (first 0.3.0 slice)
+
+- Add `Host::exec_with_input` and `Host::run_with_input` for binary payloads.
+  Existing methods send empty input. Close stdin after the payload, including
+  empty input; preserve literal argument execution and explicit shell execution.
+- Transfer input, stdout and stderr concurrently under one command timeout.
+  A command may exit without reading all input. Treat a broken stdin pipe as an
+  early close, while preserving the command's output and status. Other I/O and
+  Docker inspection failures remain errors. A timeout discards partial output.
+- Reuse Tokio's asynchronous pipes and Bollard's attached input stream and
+  shutdown support. No custom protocol or new dependency is needed.
+- Validate binary input, EOF-dependent completion, large simultaneous streams,
+  early exits, blocked stdin and use from an existing runtime. Run the same
+  exchange cases on local Linux and Docker where applicable.
+
+### Consumer guarantee comparison
+
+The current consumer helper captures literal `docker exec -i` commands with a
+90-second budget (or a caller override), binary stdout/stderr and a 4 MiB limit
+per output stream. It tolerates broken stdin pipes and kills the local process
+group on failure; remote processes can survive until container teardown.
+
+Testinfra supports literal commands, configurable deadlines and binary stdout.
+This slice adds stdin but keeps the existing lossy UTF-8 stderr string and
+unbounded output buffering. Before migrating that helper, add bounded capture
+and lossless stderr or explicitly approve those differences. Local process-group
+cleanup also differs: testinfra requests direct-child termination only. Docker
+execution uses the native API and has no local Docker CLI process to kill.
+Transcript storage, secret redaction and expected-status assertions stay with
+the caller. Supervisor/local-tool execution and complete removal of the consumer's
+process crate are outside this slice. Do not migrate the helper yet.
+
+Implementation evidence:
+
+- `exec_with_input` and `run_with_input` are implemented using the existing
+  Tokio/Bollard dependencies. Cargo.toml and Cargo.lock are unchanged.
+- The first Docker run found that an exited command can close its output while
+  the input write remains pending. The implementation now drops that write on
+  output EOF and inspects the exec status before returning a result. Early-exit
+  tests cover zero, partial and explicitly closed input with an 8 MiB payload.
+- The exchange suite passes on local Linux and Docker Alpine 3, Debian bookworm
+  slim and Fedora 44. It covers binary payloads and literal arguments, empty-input
+  EOF, 1 MiB transfers on all three streams, nonzero status, blocked writes, a
+  command that consumes input then hangs, and calls from a Tokio runtime.
+- Existing resource tests pass across the same Docker matrix. All local Linux
+  unit, resource and documentation tests pass. `test:docker` now includes the
+  stdin suite so the existing hosted Docker matrix will exercise it.
+- `mise run fmt` and the full `mise run check` gate pass, including Clippy,
+  API documentation and release-script tests.
+- No new live-systemd test, hosted run, consumer migration or publication was
+  performed. Output limits and lossless stderr remain the next bounded slice
+  before replacing the consumer command helper.
+
+
+Debian validation target update:
+
+- Use `debian:trixie-slim` in the hosted matrix and current development/release
+  instructions. The earlier bookworm run above remains historical evidence.
+- `TESTINFRA_TEST_IMAGE=debian:trixie-slim mise run test:docker` passes both
+  resource checks (7.57 seconds) and stdin checks (2.87 seconds). Workflow lint
+  passes after the matrix change.

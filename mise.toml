@@ -34,7 +34,10 @@ run = ["cargo test --locked", "mise run test:scripts"]
 
 [tasks."test:docker"]
 description = "Test resources in TESTINFRA_TEST_IMAGE (default Alpine)"
-run = "cargo test --locked --test infrastructure docker_resources -- --ignored --nocapture"
+run = [
+  "cargo test --locked --test infrastructure docker_resources -- --ignored --nocapture",
+  "cargo test --locked --test command_input docker_input -- --ignored --nocapture",
+]
 
 [tasks."test:sockets"]
 description = "Test TCP, UDP, and Unix listeners in a Linux Docker container"

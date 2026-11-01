@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [alpine:3, debian:bookworm-slim, fedora:44]
+        image: [alpine:3, debian:trixie-slim, fedora:44]
     concurrency:
       group: test-docker-${{ matrix.image }}-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true

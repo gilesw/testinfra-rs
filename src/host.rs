@@ -7,7 +7,12 @@ use std::{
     result, str, thread,
     time::{Duration, Instant},
 };
-use tokio::{io::AsyncReadExt, process::Command, runtime::Builder, time::timeout};
+use tokio::{
+    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    process::Command,
+    runtime::Builder,
+    time::timeout,
+};
 
 use bollard::{
     Docker,
@@ -15,7 +20,10 @@ use bollard::{
     errors::Error as DockerError,
     exec::{CreateExecOptions, StartExecResults},
 };
-use futures_util::StreamExt;
+use futures_util::{
+    StreamExt,
+    future::{Either, select},
+};
 
 /// Errors remain distinct from a successful check reporting an absent resource.
 #[derive(Debug, thiserror::Error)]
@@ -186,9 +194,37 @@ impl Host {
         self.exec("sh", &["-c", script])
     }
 
+    /// Run explicit shell code with binary stdin, then close stdin.
+    /// The host timeout covers writing input and collecting output together.
+    pub fn run_with_input(&self, script: &str, input: &[u8]) -> Result<CommandResult> {
+        self.exec_with_input("sh", &["-c", script], input)
+    }
+
     /// Execute a program directly with literal arguments, without a shell.
     /// A missing local executable returns `Error::Io`; Docker reports API errors.
     pub fn exec(&self, program: &str, args: &[&str]) -> Result<CommandResult> {
+        self.exec_with_input(program, args, &[])
+    }
+
+    /// Execute literal arguments with binary stdin, then close stdin.
+    ///
+    /// ```no_run
+    /// # use testinfra::{Host, Result};
+    /// # fn example(host: &Host) -> Result<()> {
+    /// let result = host.exec_with_input("cat", &[], b"binary\0input")?;
+    /// assert_eq!(result.stdout, b"binary\0input");
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Input and output are transferred concurrently under the host timeout.
+    /// An early exit can leave some input unread; its exit status remains data.
+    pub fn exec_with_input(
+        &self,
+        program: &str,
+        args: &[&str],
+        input: &[u8],
+    ) -> Result<CommandResult> {
         if program.is_empty() || program.contains('\0') || args.iter().any(|arg| arg.contains('\0'))
         {
             return Err(Error::InvalidInput(
@@ -201,6 +237,7 @@ impl Host {
                     let output = local_output(
                         Command::new(program).args(args).env("LC_ALL", "C"),
                         self.timeout,
+                        input,
                     )
                     .await?;
                     Ok(CommandResult {
@@ -223,6 +260,7 @@ impl Host {
                         endpoint.as_deref(),
                         program,
                         args,
+                        input,
                     ),
                 )
                 .await
@@ -286,13 +324,17 @@ fn run_sync<T: Send>(future: impl Future<Output = Result<T>> + Send) -> Result<T
     })
 }
 
-async fn local_output(command: &mut Command, limit: Duration) -> Result<Output> {
+async fn local_output(command: &mut Command, limit: Duration, input: &[u8]) -> Result<Output> {
     let mut child = command
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| Error::Transport("missing stdin pipe".into()))?;
     let mut stdout = child
         .stdout
         .take()
@@ -304,10 +346,11 @@ async fn local_output(command: &mut Command, limit: Duration) -> Result<Output> 
     let mut out = Vec::new();
     let mut err = Vec::new();
     let result = timeout(limit, async {
-        let (status, _, _) = futures_util::try_join!(
+        let (status, _, _, _) = futures_util::try_join!(
             child.wait(),
             stdout.read_to_end(&mut out),
-            stderr.read_to_end(&mut err)
+            stderr.read_to_end(&mut err),
+            write_input(stdin, input)
         )?;
         Ok::<_, io::Error>(Output {
             status,
@@ -332,6 +375,18 @@ async fn local_output(command: &mut Command, limit: Duration) -> Result<Output> 
     }
 }
 
+async fn write_input(mut writer: impl AsyncWrite + Unpin, input: &[u8]) -> io::Result<()> {
+    let result = async {
+        writer.write_all(input).await?;
+        writer.shutdown().await
+    }
+    .await;
+    match result {
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
+}
+
 // Bollard handles Docker's wire protocol. Ask the CLI to resolve its selected
 // context when available, rather than implementing Docker config/context parsing.
 async fn docker_endpoint(limit: Duration) -> Result<Option<String>> {
@@ -347,6 +402,7 @@ async fn docker_endpoint(limit: Duration) -> Result<Option<String>> {
             "{{.Endpoints.docker.Host}}",
         ]),
         limit,
+        &[],
     )
     .await
     {
@@ -369,6 +425,7 @@ async fn docker_run(
     endpoint: Option<&str>,
     program: &str,
     args: &[&str],
+    payload: &[u8],
 ) -> Result<CommandResult> {
     let docker = match endpoint {
         Some(endpoint) => Docker::connect_with_host(endpoint)?,
@@ -381,6 +438,7 @@ async fn docker_run(
         .create_exec(
             container,
             CreateExecOptions {
+                attach_stdin: Some(true),
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
                 env: Some(vec!["LC_ALL=C"]),
@@ -397,16 +455,30 @@ async fn docker_run(
             "Docker unexpectedly detached execution".into(),
         ));
     };
-    drop(input);
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    while let Some(chunk) = output.next().await {
-        match chunk? {
-            LogOutput::StdOut { message } | LogOutput::Console { message } => {
-                stdout.extend_from_slice(&message)
+    let read = async {
+        while let Some(chunk) = output.next().await {
+            match chunk? {
+                LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                    stdout.extend_from_slice(&message)
+                }
+                LogOutput::StdErr { message } => stderr.extend_from_slice(&message),
+                LogOutput::StdIn { .. } => {}
             }
-            LogOutput::StdErr { message } => stderr.extend_from_slice(&message),
-            LogOutput::StdIn { .. } => {}
+        }
+        Ok::<_, Error>(())
+    };
+    let write = async { write_input(input, payload).await.map_err(Error::from) };
+    match select(Box::pin(read), Box::pin(write)).await {
+        Either::Left((result, pending_write)) => {
+            // Output EOF can arrive while Docker still accepts input for an exited command.
+            drop(pending_write);
+            result?;
+        }
+        Either::Right((result, pending_read)) => {
+            result?;
+            pending_read.await?;
         }
     }
     let state = docker.inspect_exec(&exec.id).await?;
