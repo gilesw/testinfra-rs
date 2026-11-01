@@ -275,3 +275,24 @@ The subprocess regression spends two seconds discovering a context, then connect
 to a fixture socket that never answers the Linux probe. It returns a typed timeout
 at the shared three-second deadline. The default gate and Debian trixie-slim
 resource and command tests pass. No new dependency is required.
+
+### Consumer command-helper trial
+
+A local consumer trial at commit `122cb942` replaced its captured Docker command
+helper with this branch's API at `0a6f656`. The adapter keeps explicit 4 MiB limits,
+subtracts construction time from the caller's timeout and preserves binary streams
+and exit status. Transcript storage, redaction and project cleanup stay with the
+consumer. Private credential reads and supervisor/local-tool execution keep their
+existing process runner.
+
+The consumer's format and common gates pass. All 55 engine acceptance cases pass
+in 363.790 seconds. Both synthetic collection lifecycles pass in 23.935 seconds,
+with one intentionally skipped fixture. Both recovery tests pass in 85.76 seconds,
+covering seven engine faults and two collection faults. They verify typed timeouts,
+continued checks, transcript redaction and cleanup after failure or interruption.
+These runs used existing disposable Debian/systemd images and a macOS client.
+They do not establish Linux-client, hosted-workflow or VM boot validation.
+
+The trial uses a sibling path dependency. Publish the 0.3.0 API before replacing
+that path with an exact registry version for consumer integration. The package
+version remains 0.2.0 on this development branch; these additions are unpublished.
