@@ -83,3 +83,24 @@ fn blocked_resource_read_does_not_prevent_the_next_check() -> Result<()> {
     assert!(bounded.file("/etc/passwd").exists()?);
     Ok(())
 }
+
+#[test]
+fn capture_overflow_reaps_the_local_child() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let pid_path = directory.path().join("pid");
+    let host = Host::local()?.with_output_limits(1024, 1024);
+    let result = host.exec(
+        "sh",
+        &[
+            "-c",
+            "printf '%s' \"$$\" > \"$1\"; exec yes",
+            "fixture",
+            pid_path.to_str().unwrap(),
+        ],
+    );
+    assert!(matches!(result, Err(Error::OutputLimitExceeded { .. })));
+    let pid = host.file(pid_path.to_str().unwrap()).content()?;
+    let pid: u32 = pid.parse().unwrap();
+    assert!(!host.file(&format!("/proc/{pid}")).exists()?);
+    Ok(())
+}

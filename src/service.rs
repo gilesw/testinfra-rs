@@ -84,7 +84,7 @@ mod tests {
         CommandResult {
             exit_status: status,
             stdout: format!("{state}\n").into_bytes(),
-            stderr: String::new(),
+            stderr: Vec::new(),
         }
     }
     #[test]

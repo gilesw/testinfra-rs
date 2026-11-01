@@ -76,9 +76,40 @@ fn check_input(host: &Host) -> Result<()> {
 }
 ```
 
-Stderr keeps the existing lossy UTF-8 representation, and output capture has no
-size limit. Callers replacing another command runner must account for those
-limits and the timeout cleanup behaviour described below.
+Both output streams preserve their original bytes. `stderr_text()` requires
+valid UTF-8; `stderr_text_lossy()` is an explicit display conversion. Each stream
+has a default 4 MiB capture limit. Configure different limits on a host clone:
+
+```rust,no_run
+use testinfra::{Host, Result};
+
+fn check_capture(host: &Host) -> Result<()> {
+    let bounded = host.clone().with_output_limits(8 * 1024 * 1024, 1024);
+    let result = bounded.run_with_input("cat >&2", b"diagnostic")?;
+    assert_eq!(result.stderr_text()?, "diagnostic");
+    Ok(())
+}
+```
+
+Exactly the configured number of bytes is accepted. Zero permits only empty
+output. Excess output returns `Error::OutputLimitExceeded { stream, limit }`,
+where `stream` is `OutputStream::Stdout` or `OutputStream::Stderr`. It returns no
+partial output and does not expose payloads in the error. Resource reads inherit
+the same limits. Command deadlines still bound a silent or slow stream.
+
+### Migrating from 0.2.0
+
+`CommandResult::stderr` changes from `String` to `Vec<u8>` in the planned 0.3.0
+release. For exact byte comparisons, use byte strings such as `b"error"`. Replace
+text operations such as `result.stderr.trim()` with
+`result.stderr_text()?.trim()` or `result.stderr_text_lossy().trim()` when
+replacement characters are acceptable. The bytes in `Error::CommandFailed`
+remain available even when the error's display uses lossy text.
+
+Commands and resource reads that capture more than 4 MiB on either stream now
+fail unless the caller raises that stream's limit. This includes large file
+reads. Docker construction uses the default limits for context discovery and
+its initial Linux probe; host overrides apply to subsequent commands.
 
 ## Resources
 
@@ -160,8 +191,8 @@ assert_eq!(result.stdout_text()?, "literal $(text)");
   are rejected because the procfs table cannot represent them unambiguously.
 - Package versions retain the manager's native formatting. Package names are exact
   names, not globs. Resource names are validated to prevent option interpretation.
-- Stdout preserves binary bytes; text access requires UTF-8. Stderr is decoded
-  with replacement characters for invalid UTF-8. Commands run with `LC_ALL=C`.
+- Stdout and stderr preserve binary bytes; text access requires UTF-8 unless
+  lossy conversion is explicitly requested. Commands run with `LC_ALL=C`.
 - Docker execution uses Bollard's Engine API client, output stream, and exec
   inspection. Target exit statuses remain separate from Docker API errors,
   including containers that stop between checks.
@@ -171,9 +202,8 @@ assert_eq!(result.stdout_text()?, "literal $(text)");
   concurrently. A command may exit without consuming all input; its output and
   exit status are still returned. Input is never inserted into shell code or
   error messages. These methods do not provide an interactive terminal.
-- Each command has a 30-second
-  timeout by default, covering input transfer and output collection together,
-  including commands used by resource reads. Use
+- Each command has a 30-second timeout by default, covering input transfer and
+  output collection together, including commands used by resource reads. Use
   `host.with_timeout(Duration::from_secs(5))?` to change it; clone the host first
   for a per-check override. Zero and unrepresentable timeouts are rejected.
   `Host::docker_with_timeout` and `Host::docker_as_with_timeout` also configure
@@ -184,14 +214,18 @@ assert_eq!(result.stdout_text()?, "literal $(text)");
   result. Catch that error to report the affected check and continue; `?` ends
   the current test, while independent tests can still run. Partial command output
   is discarded on timeout. Timeout errors do not include arguments or output.
-- Local timeout cleanup requests termination of the direct child and waits up to
-  one additional second to reap it. Descendants may survive; inherited output
-  pipes are closed without waiting for them. A Docker timeout stops waiting for
-  the API or output stream; it does not confirm remote command termination. The
-  caller owns remote cleanup. A subsequent check can use the same host.
+- Local timeout or capture-overflow cleanup requests termination of the direct
+  child and waits up to one additional second to reap it. Descendants may survive;
+  inherited output pipes are closed without waiting for them. A Docker timeout
+  or overflow stops waiting for the API or output stream; it does not confirm
+  remote command termination. The caller owns remote cleanup. A subsequent check
+  can use the same host.
 - These are synchronous calls, even with a deadline. Async callers should still
   use a blocking worker when runtime responsiveness matters. Output is buffered
-  in memory, so avoid unbounded command output.
+  up to the configured per-stream limits without allocating each limit up front.
+  These limits bound captured byte counts, not total process memory: allocator
+  capacity and Docker transport-frame buffers add overhead. Input and remote
+  output generation are not limited by the capture settings.
 - `run()` and `check_output()` deliberately accept shell code. Use `exec()` for
   literal arguments, especially values from external input. Inspection is performed
   as the current local user or selected Docker user; there is no automatic sudo.

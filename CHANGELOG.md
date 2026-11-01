@@ -5,8 +5,12 @@
 - Add binary stdin through `exec_with_input` and `run_with_input` on local Linux
   and Docker. Transfer input and output concurrently under one command timeout,
   close stdin after the payload, and preserve results when a command exits early.
-- Keep the existing stderr representation and output-buffering behaviour;
-  lossless stderr and output limits remain separate work.
+- Capture both stdout and stderr as bytes; add strict and lossy stderr text
+  accessors. This changes `CommandResult::stderr` from `String` to `Vec<u8>`.
+- Limit each captured stream to 4 MiB by default, with per-host overrides and
+  typed `OutputLimitExceeded` errors. Resource reads inherit these limits.
+  Discard partial output and run failure cleanup on overflow. See the README
+  for migration from the unbounded 0.2.0 capture behaviour.
 
 ## 0.2.0 — 2026-11-01
 

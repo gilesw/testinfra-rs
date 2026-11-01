@@ -160,7 +160,7 @@ Consumer smoke validation on 2026-11-01:
   adoption. Existing images were reused; no new engine image was built.
 
 
-## Next: command stdin (first 0.3.0 slice)
+## Command stdin (first 0.3.0 slice)
 
 - Add `Host::exec_with_input` and `Host::run_with_input` for binary payloads.
   Existing methods send empty input. Close stdin after the payload, including
@@ -175,7 +175,7 @@ Consumer smoke validation on 2026-11-01:
   early exits, blocked stdin and use from an existing runtime. Run the same
   exchange cases on local Linux and Docker where applicable.
 
-### Consumer guarantee comparison
+### Consumer guarantee comparison at completion of the stdin slice
 
 The current consumer helper captures literal `docker exec -i` commands with a
 90-second budget (or a caller override), binary stdout/stderr and a 4 MiB limit
@@ -221,3 +221,44 @@ Debian validation target update:
 - `TESTINFRA_TEST_IMAGE=debian:trixie-slim mise run test:docker` passes both
   resource checks (7.57 seconds) and stdin checks (2.87 seconds). Workflow lint
   passes after the matrix change.
+
+## Bounded capture and lossless stderr (second 0.3.0 slice)
+
+- Store `CommandResult::stderr` as `Vec<u8>`, like stdout. Provide `stderr_text`
+  for strict UTF-8 and `stderr_text_lossy` for display. This changes the 0.2.0
+  field type; migrate text callers explicitly rather than keeping duplicate,
+  independently mutable representations. Preserve bytes in nonzero results too.
+- Limit capture to 4 MiB per stream by default, including resource commands.
+  `Host::with_output_limits(stdout, stderr)` overrides each limit. Zero permits
+  empty output only. Exactly the limit is accepted; an additional byte returns
+  `Error::OutputLimitExceeded` with the stream and limit, without captured data.
+- Apply the same limits while collecting local pipes and Docker frames. Do not
+  allocate the configured limit up front. This bounds captured byte counts, not
+  all transport buffering, allocations or remote output generation.
+- On overflow, stop reading/writing and use the existing failure cleanup:
+  request local direct-child termination with a bounded wait, or disconnect
+  Docker's exec stream. Descendants and remote commands can survive. Keep
+  supervisor/container cleanup outside this crate. Discard partial output.
+- Test exact boundaries, zero/asymmetric limits, overflow while stdin blocks,
+  binary stderr, failed UTF-8 conversion, following checks, default resource-read
+  limits and larger overrides. Run on Linux and Alpine/Trixie/Fedora Docker.
+- Reuse the existing asynchronous I/O primitives; add no dependencies.
+
+Validation:
+
+- Local Linux unit, command exchange/capture, resource and documentation tests
+  pass. A separate Linux assertion confirms the direct child is reaped after
+  overflow. Live systemd remains an explicitly skipped test in this container.
+- Resource and command suites pass on Alpine 3, Debian trixie-slim and Fedora 44.
+  The command suites take 4.35, 3.76 and 3.59 seconds respectively in this run.
+- `mise run fmt` and the full `mise run check` gate pass, including release-script
+  tests. The package file list includes the capture module and shared capture
+  tests. No dependency or lockfile change is required.
+- No hosted workflow, consumer migration or publication was performed.
+
+Before migrating a consumer, adapt its stderr text access and choose explicit
+per-stream limits and timeouts. Constructor discovery and the initial probe
+have separate budgets; callers needing one end-to-end deadline must account
+for that setup time. Local process groups and remote command cancellation remain
+outside the guarantees above. The consumer must keep its transcript/redaction
+and cleanup ownership, then validate its adapter and failure recovery.

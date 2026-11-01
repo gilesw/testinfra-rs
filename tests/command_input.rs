@@ -7,11 +7,15 @@ use std::{
 use testinfra::{Error, Host, Result};
 use tokio::runtime::Builder;
 
+#[path = "support/output_capture.rs"]
+mod output_capture;
+
 fn exercise(host: &Host) -> Result<()> {
     binary_input_and_eof(host)?;
     simultaneous_streams(host)?;
     early_exit(host)?;
     blocked_input(host)?;
+    output_capture::exercise(host)?;
     let runtime = Builder::new_current_thread().enable_all().build()?;
     let output = runtime.block_on(async { host.exec_with_input("cat", &[], b"runtime") })?;
     assert_eq!(output.stdout, b"runtime");
@@ -29,7 +33,7 @@ fn binary_input_and_eof(host: &Host) -> Result<()> {
     assert!(host.run("cat")?.stdout.is_empty());
     let output = host.run_with_input("cat; printf error >&2; exit 37", payload)?;
     assert_eq!(output.stdout, payload);
-    assert_eq!(output.stderr, "error");
+    assert_eq!(output.stderr, b"error");
     assert_eq!(output.exit_status, 37);
     let literal = "'$(printf injected)`printf injected`\n--flag";
     let output = host.exec_with_input("printf", &["%s", literal], payload)?;
@@ -57,7 +61,7 @@ fn simultaneous_streams(host: &Host) -> Result<()> {
     assert_eq!(output.stdout.len(), 2 * size);
     assert!(output.stdout[..size].iter().all(|byte| *byte == 0));
     assert_eq!(output.stdout[size..], payload);
-    assert_eq!(output.stderr.as_bytes(), vec![0; size]);
+    assert_eq!(output.stderr.as_slice(), vec![0; size]);
     Ok(())
 }
 
@@ -71,7 +75,7 @@ fn early_exit(host: &Host) -> Result<()> {
         let output = host.run_with_input(script, &payload)?;
         assert_eq!(output.exit_status, 37);
         assert_eq!(output.stdout, b"done");
-        assert_eq!(output.stderr, "error");
+        assert_eq!(output.stderr, b"error");
     }
     assert!(host.exec_with_input("true", &[], &payload)?.success());
     Ok(())
