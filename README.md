@@ -17,7 +17,7 @@ Add the crate to your test project's `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-testinfra = "0.1"
+testinfra = "0.3"
 ```
 
 To develop against a checkout, use `testinfra = { path = "../testinfra-rs" }` instead.
@@ -99,8 +99,8 @@ the same limits. Command deadlines still bound a silent or slow stream.
 
 ### Migrating from 0.2.0
 
-`CommandResult::stderr` changes from `String` to `Vec<u8>` in the planned 0.3.0
-release. For exact byte comparisons, use byte strings such as `b"error"`. Replace
+`CommandResult::stderr` changes from `String` to `Vec<u8>` in 0.3.0.
+For exact byte comparisons, use byte strings such as `b"error"`. Replace
 text operations such as `result.stderr.trim()` with
 `result.stderr_text()?.trim()` or `result.stderr_text_lossy().trim()` when
 replacement characters are acceptable. The bytes in `Error::CommandFailed`

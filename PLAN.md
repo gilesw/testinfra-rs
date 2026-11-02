@@ -294,5 +294,13 @@ These runs used existing disposable Debian/systemd images and a macOS client.
 They do not establish Linux-client, hosted-workflow or VM boot validation.
 
 The trial uses a sibling path dependency. Publish the 0.3.0 API before replacing
-that path with an exact registry version for consumer integration. The package
-version remains 0.2.0 on this development branch; these additions are unpublished.
+that path with an exact registry version for consumer integration. At trial completion the package version remained 0.2.0; the additions had not
+yet been published.
+
+## Release 0.3.0 candidate
+
+Promote the validated stdin, bounded binary capture and constructor-deadline
+changes to 0.3.0. The public stderr field change and default capture bounds are
+documented in the README migration section. Keep the existing dependency versions.
+Publication uses the tagged release checks; consumer integration will pin the
+published registry version rather than a sibling checkout.

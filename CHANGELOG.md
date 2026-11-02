@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-11-02
 
 - Add binary stdin through `exec_with_input` and `run_with_input` on local Linux
   and Docker. Transfer input and output concurrently under one command timeout,
@@ -11,6 +11,8 @@
   typed `OutputLimitExceeded` errors. Resource reads inherit these limits.
   Discard partial output and run failure cleanup on overflow. See the README
   for migration from the unbounded 0.2.0 capture behaviour.
+- Share one Docker constructor deadline across context discovery and the Linux
+  probe; subsequent commands retain the configured host timeout.
 
 ## 0.2.0 — 2026-11-01
 
