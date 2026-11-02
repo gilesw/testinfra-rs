@@ -5,7 +5,8 @@ use std::{
     fs::OpenOptions,
     net::{TcpListener, UdpSocket},
     os::unix::net::UnixListener,
-    time::Duration,
+    thread,
+    time::{Duration, Instant},
 };
 use testinfra::{Error, Host, Result};
 
@@ -25,7 +26,7 @@ fn listeners_follow_actual_kernel_state() -> Result<()> {
             .is_listening()?
     );
     drop(listener);
-    assert!(!host.socket(&format!("tcp://{address}")).is_listening()?);
+    wait_for_socket_close(&host, &format!("tcp://{address}"))?;
 
     let udp = UdpSocket::bind("127.0.0.1:0")?;
     let address = udp.local_addr()?;
@@ -52,7 +53,19 @@ fn listeners_follow_actual_kernel_state() -> Result<()> {
     assert!(host.socket(&spec).is_listening()?);
     drop(listener);
     assert!(path.exists());
-    assert!(!host.socket(&spec).is_listening()?);
+    wait_for_socket_close(&host, &spec)?;
+    Ok(())
+}
+
+fn wait_for_socket_close(host: &Host, specification: &str) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while host.socket(specification).is_listening()? {
+        assert!(
+            Instant::now() < deadline,
+            "closed socket remains listening: {specification}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
     Ok(())
 }
 

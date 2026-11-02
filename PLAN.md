@@ -304,3 +304,8 @@ changes to 0.3.0. The public stderr field change and default capture bounds are
 documented in the README migration section. Keep the existing dependency versions.
 Publication uses the tagged release checks; consumer integration will pin the
 published registry version rather than a sibling checkout.
+
+Hosted Linux validation exposed an intermittent fixture failure: the first
+observation after closing a socket could still report a listener. The teardown
+assertion now waits up to two seconds for disappearance and continues to fail if
+the listener remains. Production socket queries are unchanged.
