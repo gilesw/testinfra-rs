@@ -17,7 +17,7 @@ Add the crate to your test project's `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-testinfra = "0.1"
+testinfra = "0.3"
 ```
 
 To develop against a checkout, use `testinfra = { path = "../testinfra-rs" }` instead.
@@ -63,6 +63,54 @@ An executable example is included:
 cargo run --example check_host -- docker://web
 ```
 
+## Commands with input
+
+```rust,no_run
+use testinfra::{Host, Result};
+
+fn check_input(host: &Host) -> Result<()> {
+    let result = host.exec_with_input("cat", &[], b"binary\0input")?;
+    assert_eq!(result.stdout, b"binary\0input");
+    assert!(result.success());
+    Ok(())
+}
+```
+
+Both output streams preserve their original bytes. `stderr_text()` requires
+valid UTF-8; `stderr_text_lossy()` is an explicit display conversion. Each stream
+has a default 4 MiB capture limit. Configure different limits on a host clone:
+
+```rust,no_run
+use testinfra::{Host, Result};
+
+fn check_capture(host: &Host) -> Result<()> {
+    let bounded = host.clone().with_output_limits(8 * 1024 * 1024, 1024);
+    let result = bounded.run_with_input("cat >&2", b"diagnostic")?;
+    assert_eq!(result.stderr_text()?, "diagnostic");
+    Ok(())
+}
+```
+
+Exactly the configured number of bytes is accepted. Zero permits only empty
+output. Excess output returns `Error::OutputLimitExceeded { stream, limit }`,
+where `stream` is `OutputStream::Stdout` or `OutputStream::Stderr`. It returns no
+partial output and does not expose payloads in the error. Resource reads inherit
+the same limits. Command deadlines still bound a silent or slow stream.
+
+### Migrating from 0.2.0
+
+`CommandResult::stderr` changes from `String` to `Vec<u8>` in 0.3.0.
+For exact byte comparisons, use byte strings such as `b"error"`. Replace
+text operations such as `result.stderr.trim()` with
+`result.stderr_text()?.trim()` or `result.stderr_text_lossy().trim()` when
+replacement characters are acceptable. The bytes in `Error::CommandFailed`
+remain available even when the error's display uses lossy text.
+
+Commands and resource reads that capture more than 4 MiB on either stream now
+fail unless the caller raises that stream's limit. This includes large file
+reads. Docker construction uses the default limits for context discovery and
+its initial Linux probe; host overrides apply to subsequent commands.
+
 ## Resources
 
 Every check returns a `Result`. An absent resource usually produces `false` or
@@ -85,6 +133,8 @@ Resources are queried on demand without caching.
 | `host.socket(specification)` | TCP/Unix stream listeners and unconnected bound UDP sockets |
 | `host.run(script)` | explicit shell command with exit status, stdout bytes, stderr |
 | `host.exec(program, args)` | program invoked directly with literal arguments |
+| `host.exec_with_input(program, args, input)` | literal arguments and binary stdin, followed by EOF |
+| `host.run_with_input(script, input)` | explicit shell code and binary stdin, followed by EOF |
 | `host.run_expect(statuses, script)` | shell command requiring an accepted exit status |
 | `host.check_output(script)` | UTF-8 stdout, requiring a successful exit |
 
@@ -141,31 +191,42 @@ assert_eq!(result.stdout_text()?, "literal $(text)");
   are rejected because the procfs table cannot represent them unambiguously.
 - Package versions retain the manager's native formatting. Package names are exact
   names, not globs. Resource names are validated to prevent option interpretation.
-- Stdout preserves binary bytes; text access requires UTF-8. Stderr is decoded
-  with replacement characters for invalid UTF-8. Commands run with `LC_ALL=C`.
+- Stdout and stderr preserve binary bytes; text access requires UTF-8 unless
+  lossy conversion is explicitly requested. Commands run with `LC_ALL=C`.
 - Docker execution uses Bollard's Engine API client, output stream, and exec
   inspection. Target exit statuses remain separate from Docker API errors,
   including containers that stop between checks.
-- Commands are synchronous and stdin is closed. Each command has a 30-second
-  timeout by default, including commands used by resource reads. Use
+- Commands are synchronous. `exec_with_input` and `run_with_input` send binary
+  stdin and close it after the payload. Empty input sends EOF immediately;
+  `exec` and `run` use empty input. Input and both output streams are transferred
+  concurrently. A command may exit without consuming all input; its output and
+  exit status are still returned. Input is never inserted into shell code or
+  error messages. These methods do not provide an interactive terminal.
+- Each command has a 30-second timeout by default, covering input transfer and
+  output collection together, including commands used by resource reads. Use
   `host.with_timeout(Duration::from_secs(5))?` to change it; clone the host first
   for a per-check override. Zero and unrepresentable timeouts are rejected.
   `Host::docker_with_timeout` and `Host::docker_as_with_timeout` also configure
   Docker context discovery and the initial Linux probe. Discovery and the probe
-  each get their own budget. Multi-command resource methods have a budget per
-  command, not one deadline for the whole method.
+  share one construction budget; subsequent commands get the full host budget.
+  Multi-command resource methods have a budget per command, not one deadline for
+  the whole method.
 - A hung command returns `Error::Timeout { timeout }`, never `false` or an empty
   result. Catch that error to report the affected check and continue; `?` ends
   the current test, while independent tests can still run. Partial command output
   is discarded on timeout. Timeout errors do not include arguments or output.
-- Local timeout cleanup requests termination of the direct child and waits up to
-  one additional second to reap it. Descendants may survive; inherited output
-  pipes are closed without waiting for them. A Docker timeout stops waiting for
-  the API or output stream; it does not confirm remote command termination. The
-  caller owns remote cleanup. A subsequent check can use the same host.
+- Local timeout or capture-overflow cleanup requests termination of the direct
+  child and waits up to one additional second to reap it. Descendants may survive;
+  inherited output pipes are closed without waiting for them. A Docker timeout
+  or overflow stops waiting for the API or output stream; it does not confirm
+  remote command termination. The caller owns remote cleanup. A subsequent check
+  can use the same host.
 - These are synchronous calls, even with a deadline. Async callers should still
   use a blocking worker when runtime responsiveness matters. Output is buffered
-  in memory, so avoid unbounded command output.
+  up to the configured per-stream limits without allocating each limit up front.
+  These limits bound captured byte counts, not total process memory: allocator
+  capacity and Docker transport-frame buffers add overhead. Input and remote
+  output generation are not limited by the capture settings.
 - `run()` and `check_output()` deliberately accept shell code. Use `exec()` for
   literal arguments, especially values from external input. Inspection is performed
   as the current local user or selected Docker user; there is no automatic sudo.
@@ -180,7 +241,7 @@ Reuse existing crates for general-purpose functionality:
 - [bollard](https://docs.rs/bollard/) handles Docker's Engine API, stream framing,
   API version negotiation, and command exit status inspection.
 - [tokio](https://docs.rs/tokio/) and [futures-util](https://docs.rs/futures-util/)
-  drive Bollard behind the synchronous test API.
+  drive local process pipes and Bollard behind the synchronous test API.
 - [shlex](https://docs.rs/shlex/) quotes literal shell arguments.
 - [etc-os-release](https://docs.rs/etc-os-release/) parses distribution data read
   from the target, rather than inspecting the machine running the tests.
@@ -243,13 +304,14 @@ when missing. They exercise both successful checks and errors, including a stopp
 container. The default image is Alpine:
 
 ```sh
-cargo test --test infrastructure -- --ignored --nocapture
-TESTINFRA_TEST_IMAGE=debian:bookworm-slim cargo test --test infrastructure -- --ignored
-TESTINFRA_TEST_IMAGE=fedora:44 cargo test --test infrastructure -- --ignored
+mise run test:docker
+TESTINFRA_TEST_IMAGE=debian:trixie-slim mise run test:docker
+TESTINFRA_TEST_IMAGE=fedora:44 mise run test:docker
 ```
 
-Equivalent tasks are `mise run test:docker` (honouring `TESTINFRA_TEST_IMAGE`),
-`mise run test:sockets`, and `mise run test:systemd`.
+`mise run test:docker` runs resource and stdin checks, honouring
+`TESTINFRA_TEST_IMAGE`. Separate tasks are `mise run test:sockets` and
+`mise run test:systemd`.
 
 CI runs native Linux tests and the Docker suite on Alpine, Debian, and Fedora.
 The socket fixture uses `python:3.13-alpine` to open TCP, UDP, and Unix listeners;

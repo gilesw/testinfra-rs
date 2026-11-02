@@ -243,7 +243,7 @@ fn docker_resources() -> Result<()> {
     exercise_deadlines(&host)?;
     let output = host.run("printf 'a\\000b'; printf problem >&2; exit 42")?;
     assert_eq!(output.stdout, b"a\0b");
-    assert_eq!(output.stderr, "problem");
+    assert_eq!(output.stderr, b"problem");
     assert_eq!(output.exit_status, 42);
     assert_eq!(host.run("exit 127")?.exit_status, 127);
     assert_eq!(host.check_output("printf ''")?, "");

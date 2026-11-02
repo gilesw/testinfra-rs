@@ -5,7 +5,8 @@ use std::{
     fs::OpenOptions,
     net::{TcpListener, UdpSocket},
     os::unix::net::UnixListener,
-    time::Duration,
+    thread,
+    time::{Duration, Instant},
 };
 use testinfra::{Error, Host, Result};
 
@@ -25,7 +26,7 @@ fn listeners_follow_actual_kernel_state() -> Result<()> {
             .is_listening()?
     );
     drop(listener);
-    assert!(!host.socket(&format!("tcp://{address}")).is_listening()?);
+    wait_for_socket_close(&host, &format!("tcp://{address}"))?;
 
     let udp = UdpSocket::bind("127.0.0.1:0")?;
     let address = udp.local_addr()?;
@@ -52,7 +53,19 @@ fn listeners_follow_actual_kernel_state() -> Result<()> {
     assert!(host.socket(&spec).is_listening()?);
     drop(listener);
     assert!(path.exists());
-    assert!(!host.socket(&spec).is_listening()?);
+    wait_for_socket_close(&host, &spec)?;
+    Ok(())
+}
+
+fn wait_for_socket_close(host: &Host, specification: &str) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while host.socket(specification).is_listening()? {
+        assert!(
+            Instant::now() < deadline,
+            "closed socket remains listening: {specification}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
     Ok(())
 }
 
@@ -81,5 +94,26 @@ fn blocked_resource_read_does_not_prevent_the_next_check() -> Result<()> {
     drop(writer);
     assert!(matches!(result, Err(Error::Timeout { .. })));
     assert!(bounded.file("/etc/passwd").exists()?);
+    Ok(())
+}
+
+#[test]
+fn capture_overflow_reaps_the_local_child() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let pid_path = directory.path().join("pid");
+    let host = Host::local()?.with_output_limits(1024, 1024);
+    let result = host.exec(
+        "sh",
+        &[
+            "-c",
+            "printf '%s' \"$$\" > \"$1\"; exec yes",
+            "fixture",
+            pid_path.to_str().unwrap(),
+        ],
+    );
+    assert!(matches!(result, Err(Error::OutputLimitExceeded { .. })));
+    let pid = host.file(pid_path.to_str().unwrap()).content()?;
+    let pid: u32 = pid.parse().unwrap();
+    assert!(!host.file(&format!("/proc/{pid}")).exists()?);
     Ok(())
 }

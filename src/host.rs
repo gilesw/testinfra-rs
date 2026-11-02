@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     env,
     future::Future,
     io::{self, ErrorKind},
@@ -7,7 +8,12 @@ use std::{
     result, str, thread,
     time::{Duration, Instant},
 };
-use tokio::{io::AsyncReadExt, process::Command, runtime::Builder, time::timeout};
+use tokio::{
+    io::{AsyncWrite, AsyncWriteExt},
+    process::Command,
+    runtime::Builder,
+    time::timeout,
+};
 
 use bollard::{
     Docker,
@@ -15,7 +21,12 @@ use bollard::{
     errors::Error as DockerError,
     exec::{CreateExecOptions, StartExecResults},
 };
-use futures_util::StreamExt;
+use futures_util::{
+    StreamExt,
+    future::{Either, select},
+};
+
+use crate::capture::{self, OutputLimits, OutputStream};
 
 /// Errors remain distinct from a successful check reporting an absent resource.
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +36,9 @@ pub enum Error {
     /// The wait expired. A remote command or local descendants may still run.
     #[error("system check timed out after {timeout:?}")]
     Timeout { timeout: Duration },
+    /// Capture stopped without returning partial output. Remote work may continue.
+    #[error("{stream} exceeded the capture limit of {limit} bytes")]
+    OutputLimitExceeded { stream: OutputStream, limit: usize },
     #[error("invalid input: {0}")]
     InvalidInput(String),
     #[error("unsupported: {0}")]
@@ -35,7 +49,7 @@ pub enum Error {
     Transport(String),
     #[error(transparent)]
     Docker(#[from] DockerError),
-    #[error("command {command:?} exited with {status}: {stderr}", status = .result.exit_status, stderr = .result.stderr.trim())]
+    #[error("command {command:?} exited with {status}: {stderr}", status = .result.exit_status, stderr = .result.stderr_text_lossy().trim())]
     CommandFailed {
         command: String,
         result: CommandResult,
@@ -51,12 +65,20 @@ pub type Result<T> = result::Result<T, Error>;
 pub struct CommandResult {
     pub exit_status: i32,
     pub stdout: Vec<u8>,
-    pub stderr: String,
+    pub stderr: Vec<u8>,
 }
 
 impl CommandResult {
     pub fn success(&self) -> bool {
         self.exit_status == 0
+    }
+    /// Decode stderr as UTF-8 without replacing invalid bytes.
+    pub fn stderr_text(&self) -> Result<&str> {
+        str::from_utf8(&self.stderr).map_err(|e| Error::Parse(e.to_string()))
+    }
+    /// Display stderr with replacement characters for invalid UTF-8.
+    pub fn stderr_text_lossy(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.stderr)
     }
     pub fn stdout_text(&self) -> Result<&str> {
         str::from_utf8(&self.stdout).map_err(|e| Error::Parse(e.to_string()))
@@ -78,6 +100,7 @@ enum Backend {
 pub struct Host {
     backend: Backend,
     timeout: Duration,
+    output_limits: OutputLimits,
 }
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -92,6 +115,7 @@ impl Host {
         Ok(Self {
             backend: Backend::Local,
             timeout: DEFAULT_TIMEOUT,
+            output_limits: OutputLimits::default(),
         })
     }
 
@@ -111,6 +135,14 @@ impl Host {
         validate_timeout(timeout)?;
         self.timeout = timeout;
         Ok(self)
+    }
+
+    /// Set the per-command stdout and stderr capture limits in bytes.
+    /// Defaults to 4 MiB per stream. Zero permits only empty output.
+    /// Resource reads inherit these limits; clone first for a single check.
+    pub fn with_output_limits(mut self, stdout: usize, stderr: usize) -> Self {
+        self.output_limits = OutputLimits { stdout, stderr };
+        self
     }
 
     /// Execute as a Docker username or UID, optionally followed by `:group`.
@@ -143,18 +175,25 @@ impl Host {
                 "expected a Docker container name or ID".into(),
             ));
         }
+        let started = Instant::now();
+        let endpoint = run_sync(docker_endpoint(timeout))?;
+        let remaining = timeout
+            .checked_sub(started.elapsed())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(Error::Timeout { timeout })?;
         let host = Self {
             backend: Backend::Docker {
                 container: container.into(),
                 user,
-                endpoint: run_sync(docker_endpoint(timeout))?,
+                endpoint,
             },
-            timeout,
+            timeout: remaining,
+            output_limits: OutputLimits::default(),
         };
         if host.check_output("uname -s")?.trim() != "Linux" {
             return Err(Error::Unsupported("Docker target must run Linux".into()));
         }
-        Ok(host)
+        host.with_timeout(timeout)
     }
 
     /// Accept `local://` or `docker://[user@]container`.
@@ -186,9 +225,37 @@ impl Host {
         self.exec("sh", &["-c", script])
     }
 
+    /// Run explicit shell code with binary stdin, then close stdin.
+    /// The host timeout covers writing input and collecting output together.
+    pub fn run_with_input(&self, script: &str, input: &[u8]) -> Result<CommandResult> {
+        self.exec_with_input("sh", &["-c", script], input)
+    }
+
     /// Execute a program directly with literal arguments, without a shell.
     /// A missing local executable returns `Error::Io`; Docker reports API errors.
     pub fn exec(&self, program: &str, args: &[&str]) -> Result<CommandResult> {
+        self.exec_with_input(program, args, &[])
+    }
+
+    /// Execute literal arguments with binary stdin, then close stdin.
+    ///
+    /// ```no_run
+    /// # use testinfra::{Host, Result};
+    /// # fn example(host: &Host) -> Result<()> {
+    /// let result = host.exec_with_input("cat", &[], b"binary\0input")?;
+    /// assert_eq!(result.stdout, b"binary\0input");
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Input and output are transferred concurrently under the host timeout.
+    /// An early exit can leave some input unread; its exit status remains data.
+    pub fn exec_with_input(
+        &self,
+        program: &str,
+        args: &[&str],
+        input: &[u8],
+    ) -> Result<CommandResult> {
         if program.is_empty() || program.contains('\0') || args.iter().any(|arg| arg.contains('\0'))
         {
             return Err(Error::InvalidInput(
@@ -201,6 +268,8 @@ impl Host {
                     let output = local_output(
                         Command::new(program).args(args).env("LC_ALL", "C"),
                         self.timeout,
+                        input,
+                        self.output_limits,
                     )
                     .await?;
                     Ok(CommandResult {
@@ -208,7 +277,7 @@ impl Host {
                             Error::Transport(format!("command terminated by {}", output.status))
                         })?,
                         stdout: output.stdout,
-                        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                        stderr: output.stderr,
                     })
                 }
                 Backend::Docker {
@@ -223,6 +292,8 @@ impl Host {
                         endpoint.as_deref(),
                         program,
                         args,
+                        input,
+                        self.output_limits,
                     ),
                 )
                 .await
@@ -286,13 +357,22 @@ fn run_sync<T: Send>(future: impl Future<Output = Result<T>> + Send) -> Result<T
     })
 }
 
-async fn local_output(command: &mut Command, limit: Duration) -> Result<Output> {
+async fn local_output(
+    command: &mut Command,
+    limit: Duration,
+    input: &[u8],
+    limits: OutputLimits,
+) -> Result<Output> {
     let mut child = command
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| Error::Transport("missing stdin pipe".into()))?;
     let mut stdout = child
         .stdout
         .take()
@@ -301,15 +381,14 @@ async fn local_output(command: &mut Command, limit: Duration) -> Result<Output> 
         .stderr
         .take()
         .ok_or_else(|| Error::Transport("missing stderr pipe".into()))?;
-    let mut out = Vec::new();
-    let mut err = Vec::new();
     let result = timeout(limit, async {
-        let (status, _, _) = futures_util::try_join!(
-            child.wait(),
-            stdout.read_to_end(&mut out),
-            stderr.read_to_end(&mut err)
+        let (status, out, err, _) = futures_util::try_join!(
+            async { child.wait().await.map_err(Error::from) },
+            capture::read(&mut stdout, limits.stdout, OutputStream::Stdout),
+            capture::read(&mut stderr, limits.stderr, OutputStream::Stderr),
+            async { write_input(stdin, input).await.map_err(Error::from) }
         )?;
-        Ok::<_, io::Error>(Output {
+        Ok::<_, Error>(Output {
             status,
             stdout: out,
             stderr: err,
@@ -324,11 +403,23 @@ async fn local_output(command: &mut Command, limit: Duration) -> Result<Output> 
             drop(stderr);
             let _ = timeout(Duration::from_secs(1), child.kill()).await;
             match other {
-                Ok(Err(error)) => Err(error.into()),
+                Ok(Err(error)) => Err(error),
                 Err(_) => Err(Error::Timeout { timeout: limit }),
                 Ok(Ok(_)) => unreachable!(),
             }
         }
+    }
+}
+
+async fn write_input(mut writer: impl AsyncWrite + Unpin, input: &[u8]) -> io::Result<()> {
+    let result = async {
+        writer.write_all(input).await?;
+        writer.shutdown().await
+    }
+    .await;
+    match result {
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(()),
+        other => other,
     }
 }
 
@@ -347,6 +438,8 @@ async fn docker_endpoint(limit: Duration) -> Result<Option<String>> {
             "{{.Endpoints.docker.Host}}",
         ]),
         limit,
+        &[],
+        OutputLimits::default(),
     )
     .await
     {
@@ -369,6 +462,8 @@ async fn docker_run(
     endpoint: Option<&str>,
     program: &str,
     args: &[&str],
+    payload: &[u8],
+    limits: OutputLimits,
 ) -> Result<CommandResult> {
     let docker = match endpoint {
         Some(endpoint) => Docker::connect_with_host(endpoint)?,
@@ -381,6 +476,7 @@ async fn docker_run(
         .create_exec(
             container,
             CreateExecOptions {
+                attach_stdin: Some(true),
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
                 env: Some(vec!["LC_ALL=C"]),
@@ -397,16 +493,32 @@ async fn docker_run(
             "Docker unexpectedly detached execution".into(),
         ));
     };
-    drop(input);
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    while let Some(chunk) = output.next().await {
-        match chunk? {
-            LogOutput::StdOut { message } | LogOutput::Console { message } => {
-                stdout.extend_from_slice(&message)
+    let read = async {
+        while let Some(chunk) = output.next().await {
+            match chunk? {
+                LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                    capture::append(&mut stdout, &message, limits.stdout, OutputStream::Stdout)?
+                }
+                LogOutput::StdErr { message } => {
+                    capture::append(&mut stderr, &message, limits.stderr, OutputStream::Stderr)?
+                }
+                LogOutput::StdIn { .. } => {}
             }
-            LogOutput::StdErr { message } => stderr.extend_from_slice(&message),
-            LogOutput::StdIn { .. } => {}
+        }
+        Ok::<_, Error>(())
+    };
+    let write = async { write_input(input, payload).await.map_err(Error::from) };
+    match select(Box::pin(read), Box::pin(write)).await {
+        Either::Left((result, pending_write)) => {
+            // Output EOF can arrive while Docker still accepts input for an exited command.
+            drop(pending_write);
+            result?;
+        }
+        Either::Right((result, pending_read)) => {
+            result?;
+            pending_read.await?;
         }
     }
     let state = docker.inspect_exec(&exec.id).await?;
@@ -422,7 +534,7 @@ async fn docker_run(
     Ok(CommandResult {
         exit_status,
         stdout,
-        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        stderr,
     })
 }
 
@@ -440,6 +552,7 @@ mod tests {
         Host {
             backend: Backend::Local,
             timeout: DEFAULT_TIMEOUT,
+            output_limits: OutputLimits::default(),
         }
     }
 
@@ -502,7 +615,7 @@ mod tests {
     fn status_stdout_stderr_and_binary_are_preserved() -> Result<()> {
         let r = shell().run("printf 'a\\000b'; printf problem >&2; exit 42")?;
         assert_eq!(r.stdout, b"a\0b");
-        assert_eq!(r.stderr, "problem");
+        assert_eq!(r.stderr, b"problem");
         assert_eq!(r.exit_status, 42);
         assert!(!r.success());
         assert_eq!(shell().run("exit 127")?.exit_status, 127);

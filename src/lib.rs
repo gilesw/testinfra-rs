@@ -12,12 +12,14 @@
 //! }
 //! ```
 
+mod capture;
 mod host;
 mod kernel;
 mod resources;
 mod service;
 mod socket;
 
+pub use capture::OutputStream;
 pub use host::{CommandResult, Error, Host, Result};
 pub use kernel::{MountInfo, MountPoint, Sysctl};
 pub use resources::{File, FileMetadata, Group, Package, Process, SystemInfo, User};
